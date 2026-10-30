@@ -76,10 +76,22 @@ jobs:
           xdftool ci.hdf delete a1 + delete a2
           head -c 500000 /dev/urandom > c.bin
           xdftool ci.hdf write c.bin c1 + makedir d + write b.bin d/b3
+          head -c 2048 /dev/zero > j.bin
+          xdftool ci.hdf write j.bin AmiDefrag.journal
           ./amidefrag IMAGE=ci.hdf LIST
           ./amidefrag IMAGE=ci.hdf MAP | tee ci.out
-          grep -q "fragmented: 1 " ci.out
+          grep -q "fragmented: 2 " ci.out
           grep -q "unknown  *0 blocks" ci.out
+          # and the engine itself: both files contiguous afterwards, contents intact
+          ./amidefrag IMAGE=ci.hdf DEFRAG FORCE | tee defrag.out
+          grep -q "2 moved" defrag.out
+          ./amidefrag IMAGE=ci.hdf | tee after.out
+          grep -q "fragmented: 0 " after.out
+          grep -q "unknown  *0 blocks" after.out
+          grep -q "Bitmap flag: valid" after.out
+          xdftool ci.hdf read c1 c1.out && cmp c1.out c.bin
+          xdftool ci.hdf read d/b3 b3.out && cmp b3.out b.bin
+          xdftool ci.hdf read a3 a3.out && cmp a3.out a.bin
 
       - name: Upload Linux binary
         uses: actions/upload-artifact@v4
