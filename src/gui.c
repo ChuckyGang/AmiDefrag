@@ -206,9 +206,11 @@ static void fill_labels(struct Gui *g)
         struct VolumeInfo *v = &g->vols->v[i];
         Volume_FsName(v->dostype, fs, sizeof(fs));
         Volume_SizeString(v->num_blocks, v->sector_size, sz, sizeof(sz));
-        AD_SNPRINTF(g->texts[i], "%-5s %-16s %-14s %9s  %s", v->dosname,
+        /* DH0  Work  FFS (DOS\3)  120 MB  scsi.device:0  - the device tells a
+         * real partition from a directory mount or a CD at a glance. */
+        AD_SNPRINTF(g->texts[i], "%-5s %-14s %-13s %8s  %s:%lu", v->dosname,
                     v->volname[0] ? v->volname : "-", fs, sz,
-                    v->fskind == FS_UNKNOWN ? "(unsupported)" : "");
+                    v->devname, (unsigned long)v->unit);
         g->nodes[i].ln_Name = g->texts[i];
         g->nodes[i].ln_Pri  = 0;
         AddTail(&g->labels, &g->nodes[i]);
