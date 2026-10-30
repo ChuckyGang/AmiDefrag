@@ -137,7 +137,7 @@ read-write through amifuse with the *real* handler (FastFileSystem 3.2,
 pfs3aio, SmartFilesystem from `~/UAE/WB323/L`), fills the disk with
 alternating tiny filler files, deletes every other one so the free space
 becomes a sieve of 1-16 KB holes, copies real files into the holes
-(`~/UAE/WB323` and `/mnt/share/Amiga/Demos` by default, `--src` to
+(`/mnt/share/Amiga/Demos`, `MODULES` and then `~/UAE/WB323` by default, `--src` to
 change), then deletes the remaining fillers. Result: every file larger
 than a hole is in many pieces, free space is riddled with small gaps,
 and one large free run is left at the end. The emulated handlers manage

@@ -17,7 +17,7 @@ How the fragmentation is produced ("sieve" method):
   4. The rest of the disk is filled to the brim with alternating small filler
      files: A (future holes, 2..32 blocks) and B (future gaps, 1..8 blocks).
   5. All A fillers are deleted -> free space is a sieve of small holes.
-  6. Real files (default: ~/UAE/WB323 and /mnt/share/Amiga/Demos, directory
+  6. Real files (default: /mnt/share/Amiga/Demos, MODULES, then ~/UAE/WB323; directory
      structure preserved, names cut to 30 chars) are copied in until the
      disk is full or --fill is reached. Every file larger than a hole is
      split across many holes by the handler's own allocator.
@@ -149,7 +149,7 @@ def main():
     if not os.path.isfile(fs["handler"]): sys.exit("handler not found: " + fs["handler"])
     if not os.access(a.amipart, os.X_OK): sys.exit("AmiPart host CLI not found: " + a.amipart)
     if not shutil.which("amifuse"): sys.exit("amifuse not on PATH")
-    srcs = a.src or [os.path.expanduser("~/UAE/WB323"), "/mnt/share/Amiga/Demos"]
+    srcs = a.src or ["/mnt/share/Amiga/Demos", "/mnt/share/Amiga/MODULES", os.path.expanduser("~/UAE/WB323")]
     srcs = [s for s in srcs if os.path.isdir(s)]
     if not srcs: sys.exit("no source directory found")
 
