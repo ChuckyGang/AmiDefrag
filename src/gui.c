@@ -22,6 +22,7 @@
 #include <graphics/text.h>
 #include <graphics/gfxmacros.h>
 #include <libraries/gadtools.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
@@ -39,7 +40,7 @@
 
 extern struct GfxBase *GfxBase;
 
-enum { GID_LIST = 1, GID_ANALYZE, GID_RESCAN, GID_DEFRAG };
+enum { GID_LIST = 1, GID_ANALYZE, GID_RESCAN, GID_DEFRAG, GID_ABOUT };
 
 #define CELL   5          /* square size in pixels */
 #define PITCH  6          /* square + gap */
@@ -391,13 +392,49 @@ static LONG ask(struct Gui *g, const char *title, const char *body, const char *
     return EasyRequestArgs(g->win, &es, NULL, NULL);
 }
 
+static void show_about(struct Gui *g)
+{
+    char body[600];
+    static char title[64];
+    AD_SNPRINTF(body,
+        "AmiDefrag %s\nBuilt: %s\n"
+        "Disk defragmenter for AmigaOS with the classic block map.\n\n"
+        "Files are moved one at a time with a journaled, single-write\n"
+        "commit per file, so the volume stays valid at every moment.\n"
+        "FFS/OFS defragmentation; PFS3 and SFS maps.\n\n"
+        "A native GadTools application, no dependencies beyond the ROM.\n\n"
+        "Director: John Hertell\n"
+        "Code: Claude Code (Anthropic)\n\n"
+        "https://github.com/ChuckyGang/AmiDefrag\n\n"
+        "MIT License \251 2026 John Hertell",
+        AMIDEFRAG_VERSION, AmiDefrag_BuildStamp);
+    AD_SNPRINTF(title, "About %s", AMIDEFRAG_VERTITLE);
+    {
+        struct EasyStruct es;
+        es.es_StructSize   = sizeof(es);
+        es.es_Flags        = 0;
+        es.es_Title        = (UBYTE *)title;
+        es.es_TextFormat   = (UBYTE *)body;
+        es.es_GadgetFormat = (UBYTE *)"OK";
+        EasyRequestArgs(g->win, &es, NULL, NULL);
+    }
+}
+
+/* Seconds since 1978 from a DateStamp, for elapsed-time display. */
+static ULONG now_seconds(void)
+{
+    struct DateStamp ds;
+    DateStamp(&ds);
+    return (ULONG)ds.ds_Days * 86400UL + (ULONG)ds.ds_Minute * 60UL + (ULONG)ds.ds_Tick / 50UL;
+}
+
 static void defragment(struct Gui *g)
 {
     struct VolumeInfo *v;
     struct BlockDev *bd;
     struct FfsDefragOpts  o;
     struct FfsDefragStats st;
-    char err[128], body[400];
+    char err[128], body[900];
     LONG rc;
 
     if (!g->have_map || g->map_vol < 0 || g->map_vol >= (WORD)g->vols->count) return;
@@ -421,7 +458,12 @@ static void defragment(struct Gui *g)
         return;
     }
     AD_SNPRINTF(body,
-        "Defragment %s (%s:)?\n\n"
+        "EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\n"
+        "AmiDefrag rewrites file data and filesystem structures\n"
+        "on %s (%s:). A bug here can cause permanent data loss.\n"
+        "Make sure you have a FULL BACKUP of this volume before\n"
+        "proceeding. The author accepts NO responsibility for any\n"
+        "loss of data caused by this software.\n\n"
         "%lu fragmented file(s), %lu blocks.\n"
         "%lu can be made contiguous, %lu have no free run large enough.\n\n"
         "The volume is inhibited while this runs: nothing else must\n"
@@ -429,7 +471,7 @@ static void defragment(struct Gui *g)
         "volume valid (the filesystem may validate it on the next mount).",
         g->map.volname, v->dosname, (unsigned long)st.candidates, (unsigned long)st.cand_blocks,
         (unsigned long)st.moved, (unsigned long)st.skipped_space);
-    if (ask(g, "AmiDefrag", body, "Defragment|Cancel") != 1) {
+    if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
         set_status(g, "Cancelled.");
         BlockDev_Close(bd);
         set_defrag_enabled(g, TRUE);
@@ -438,9 +480,29 @@ static void defragment(struct Gui *g)
 
     o.dry_run = FALSE;
     g->scanning = TRUE;
-    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
-    g->scanning = FALSE;
-    BlockDev_Close(bd);
+    {
+        ULONG t0 = now_seconds(), secs;
+        rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
+        secs = now_seconds() - t0;
+        g->scanning = FALSE;
+        BlockDev_Close(bd);
+        if (rc != RETURN_FAIL && !st.needs_validation && !g->quit) {
+            char moved[24];
+            Volume_SizeString(st.moved_blocks, g->map.blocksize, moved, sizeof(moved));
+            AD_SNPRINTF(body,
+                "Defragmentation of %s finished.\n\n"
+                "Files made contiguous: %lu of %lu\n"
+                "Data moved: %s (%lu blocks)\n"
+                "Time: %lu min %lu s\n"
+                "Skipped, no free run large enough: %lu\n%s",
+                g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
+                moved, (unsigned long)st.moved_blocks,
+                (unsigned long)(secs / 60), (unsigned long)(secs % 60),
+                (unsigned long)st.skipped_space,
+                st.aborted ? "\nStopped early at your request." : "");
+            ask(g, "AmiDefrag", body, "OK");
+        }
+    }
 
     if (g->have_map) { FsMap_Recount(&g->map); g->map.frag_files = st.candidates - st.moved; draw_map(g); }
     AD_SNPRINTF(body, "%s: %lu of %lu file(s) made contiguous (%lu blocks), %lu skipped for space%s%s%s",
@@ -475,6 +537,7 @@ static void handle_msg(struct Gui *g, ULONG iclass, UWORD code, struct Gadget *g
         case GID_ANALYZE: analyze(g); break;
         case GID_RESCAN:  rescan(g); set_status(g, "Volume list refreshed."); break;
         case GID_DEFRAG:  if (!g->scanning) defragment(g); break;
+        case GID_ABOUT:   show_about(g); break;
         }
         break;
     }
@@ -502,7 +565,7 @@ static BOOL build_window(struct Gui *g)
     g->win_h = g->scr->Height < 480 ? g->scr->Height - 2 : 480;
     inner_w  = g->win_w - g->bor_l - bor_r;
     btn_h    = g->fh + 6;
-    btn_w    = (inner_w - pad * 4) / 3;
+    btn_w    = (inner_w - pad * 5) / 4;
     lv_h     = 4 * (g->fh + 1) + 4;
 
     obtain_pens(g);
@@ -533,9 +596,12 @@ static BOOL build_window(struct Gui *g)
     ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Rescan";     ng.ng_GadgetID = GID_RESCAN;
     { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
-    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "Defragment"; ng.ng_GadgetID = GID_DEFRAG;
-    { struct TagItem t[] = { { GA_Disabled, TRUE }, { TAG_DONE, 0 } };
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Defragment"; ng.ng_GadgetID = GID_DEFRAG;
+    { struct TagItem t[] = { { GA_Disabled, TRUE }, { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = g->defrag_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "A_bout";      ng.ng_GadgetID = GID_ABOUT;
+    { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
+      prev = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
     y += btn_h + pad;
 
     /* map takes what is left above legend + status */

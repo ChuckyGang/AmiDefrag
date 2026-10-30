@@ -56,8 +56,12 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
     memset(&o, 0, sizeof(o));
     o.dry_run = dry;
     if (!dry && !force) {
-        outf("About to defragment %s (%s). Fragmented files are moved one at a time; the volume\n"
-             "is inhibited while this runs. Make sure nothing writes to it.\n", v->dosname, v->devname);
+        outf("EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n"
+             "AmiDefrag rewrites file data and filesystem structures on %s (%s).\n"
+             "A bug here can cause permanent data loss. Make sure you have a FULL BACKUP.\n"
+             "The author accepts no responsibility for any loss of data.\n"
+             "Fragmented files are moved one at a time; the volume is inhibited while this\n"
+             "runs, so nothing else must write to it.\n", v->dosname, v->devname);
         if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
     }
     rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, NULL, NULL, &st, err, sizeof(err));

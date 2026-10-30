@@ -137,3 +137,7 @@ test/       make_testdisk.sh (test.hdf is generated, not committed)
   `btreenodes.h`, `packets.h` (defragment packets).
 * pfs3aio sources: `blocks.h`, `allocation.c`, `anodes.c`.
 * AmigaDOS FFS block layout (ROM Kernel Manual, adflib/amitools).
+
+## License
+
+MIT, see LICENSE. Experimental software: keep a full backup of any volume you defragment.
