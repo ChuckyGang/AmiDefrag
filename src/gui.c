@@ -81,7 +81,7 @@ static void obtain_pens(struct Gui *g)
         { 0x00000000, 0x55555555, 0xFFFFFFFF },   /* data: blue       */
         { 0xFFFFFFFF, 0x22222222, 0x22222222 },   /* fragmented: red  */
         { 0x00000000, 0xAAAAAAAA, 0x33333333 },   /* system: green    */
-        { 0x88888888, 0x88888888, 0x88888888 },   /* reserved: grey   */
+        { 0x00000000, 0xBBBBBBBB, 0xBBBBBBBB },   /* reserved: cyan (grey = window bg) */
         { 0xFFFFFFFF, 0xDDDDDDDD, 0x00000000 },   /* unknown: yellow  */
     };
     /* 4-colour fallback: WB pens 0 grey 1 black 2 white 3 blue */
