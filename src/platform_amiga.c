@@ -1,0 +1,88 @@
+/*
+ * platform_amiga.c - OS services for the move engines: Inhibit() the
+ * volume through dos.library, create / delete the journal file with
+ * ordinary file calls while the handler still runs.
+ */
+#include <exec/types.h>
+#include <exec/memory.h>
+#include <dos/dos.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#include "clib.h"
+#include "volume.h"
+#include "ffs_defrag.h"
+
+static void devname_colon(const struct VolumeInfo *v, char *out, ULONG outlen)
+{
+    snprintf(out, outlen, "%s:", v->dosname);
+}
+
+/* Image files and unmounted partitions have no handler to talk to: like
+ * the host build, the journal must already be in the image then. */
+static BOOL no_handler(const struct VolumeInfo *v)
+{
+    const char *d = v->devname;
+    BOOL is_file = (d[0] == 'F' || d[0] == 'f') && (d[1] == 'I' || d[1] == 'i') &&
+                   (d[2] == 'L' || d[2] == 'l') && (d[3] == 'E' || d[3] == 'e') && d[4] == ':';
+    return !v->mounted || is_file;
+}
+
+static BOOL pf_inhibit(void *ud, const struct VolumeInfo *v, BOOL on, char *err, ULONG errlen)
+{
+    char name[40];
+    int  tries;
+    (void)ud;
+    if (no_handler(v)) return TRUE;
+    devname_colon(v, name, sizeof(name));
+    if (!on) { Inhibit((CONST_STRPTR)name, DOSFALSE); return TRUE; }
+    /* FFS refuses while its own writes are unflushed (up to ~3 s). */
+    for (tries = 0; tries < 20; tries++) {
+        if (Inhibit((CONST_STRPTR)name, DOSTRUE)) return TRUE;
+        Delay(25);
+    }
+    if (err) snprintf(err, errlen, "cannot inhibit %s (error %ld): files open or writes pending",
+                      name, (long)IoErr());
+    return FALSE;
+}
+
+static BOOL pf_create_journal(void *ud, const struct VolumeInfo *v, ULONG bytes, char *err, ULONG errlen)
+{
+    char path[64];
+    BPTR fh;
+    UBYTE *zero;
+    BOOL ok = TRUE;
+    (void)ud;
+    if (no_handler(v)) return TRUE;
+    snprintf(path, sizeof(path), "%s:" FFS_JOURNAL_NAME, v->dosname);
+    zero = (UBYTE *)AllocVec(bytes, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!zero) { if (err) strncpy(err, "out of memory", errlen - 1); return FALSE; }
+    fh = Open((CONST_STRPTR)path, MODE_NEWFILE);
+    if (!fh) {
+        if (err) snprintf(err, errlen, "cannot create %s (error %ld)", path, (long)IoErr());
+        FreeVec(zero); return FALSE;
+    }
+    if (Write(fh, zero, (LONG)bytes) != (LONG)bytes) {
+        if (err) snprintf(err, errlen, "cannot write %s (error %ld)", path, (long)IoErr());
+        ok = FALSE;
+    }
+    Close(fh);
+    FreeVec(zero);
+    if (!ok) DeleteFile((CONST_STRPTR)path);
+    return ok;
+}
+
+static BOOL pf_delete_journal(void *ud, const struct VolumeInfo *v)
+{
+    char path[64];
+    (void)ud;
+    if (no_handler(v)) return TRUE;
+    snprintf(path, sizeof(path), "%s:" FFS_JOURNAL_NAME, v->dosname);
+    return DeleteFile((CONST_STRPTR)path) != 0;
+}
+
+static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL };
+
+const struct FfsDefragPlatform *FfsDefrag_DefaultPlatform(void)
+{
+    return &amiga_pf;
+}

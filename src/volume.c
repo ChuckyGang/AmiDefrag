@@ -161,6 +161,18 @@ void Volume_EnumerateMounted(struct VolumeList *vl)
     }
 
     UnLockDosList(LDF_DEVICES | LDF_VOLUMES | LDF_READ);
+
+    /* Which of them is the boot volume: the handler behind SYS:. */
+    {
+        BPTR l = Lock((CONST_STRPTR)"SYS:", ACCESS_READ);
+        if (l) {
+            struct MsgPort *boot = ((struct FileLock *)BADDR(l))->fl_Task;
+            UWORD i;
+            for (i = 0; i < vl->count; i++)
+                if (tasks[i] && tasks[i] == boot) vl->v[i].is_boot = TRUE;
+            UnLock(l);
+        }
+    }
 }
 
 #else  /* host */

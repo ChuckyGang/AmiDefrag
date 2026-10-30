@@ -39,6 +39,7 @@
 
 struct Ffs {
     struct FsCtx *c;
+    ULONG  ref_free;         /* referenced blocks the bitmap says are free */
     ULONG  nlongs;
     ULONG  reserved;
     ULONG  root;
@@ -47,6 +48,15 @@ struct Ffs {
     UBYTE *dirbuf, *hdrbuf, *extbuf;
     BOOL   dircache_fs;
 };
+
+/* Classify a referenced block; a block the bitmap holds as free is a
+ * real inconsistency (lost structure or stale bitmap) and is counted. */
+static void mark_blk(struct Ffs *f, ULONG blk, UBYTE cls)
+{
+    if (blk >= f->c->m->nblocks) return;
+    if (FsMap_Get(f->c->m, blk) == BLK_FREE && blk >= f->reserved) f->ref_free++;
+    FsMap_Set(f->c->m, blk, cls);
+}
 
 static BOOL ffs_checksum_ok(const UBYTE *b, ULONG nlongs)
 {
@@ -165,7 +175,7 @@ static ULONG walk_file(struct Ffs *f, LONG mark, ULONG *nblk)
             else if (p != prev + 1 && !(p == prev + 2 && prev + 1 == own)) runs++;
             prev = p;
             count++;
-            if (mark >= 0) FsMap_Set(m, p, (UBYTE)mark);
+            if (mark >= 0) mark_blk(f, p, (UBYTE)mark);
         }
         {
             ULONG ext = (ULONG)tail(b, nl, 2);
@@ -175,7 +185,7 @@ static ULONG walk_file(struct Ffs *f, LONG mark, ULONG *nblk)
                 fs_note(c, "broken file extension chain");
                 break;
             }
-            if (mark >= 0) FsMap_Set(m, ext, BLK_META);
+            if (mark >= 0) mark_blk(f, ext, BLK_META);
             b = f->extbuf;
             own = ext;
         }
@@ -210,7 +220,7 @@ static void follow_dircache(struct Ffs *f, ULONG blk)
     while (blk && blk < c->m->nblocks && guard++ < 4096) {
         if (FsMap_Get(c->m, blk) == BLK_META) break;
         if (!fs_read(c, blk, f->extbuf) || bel(f->extbuf, 0) != T_DIRCACHE) break;
-        FsMap_Set(c->m, blk, BLK_META);
+        mark_blk(f, blk, BLK_META);
         blk = bel(f->extbuf, 4);
     }
 }
@@ -236,7 +246,7 @@ static BOOL walk_directories(struct Ffs *f)
             fs_note(c, "directory block with bad type");
             continue;
         }
-        FsMap_Set(m, dir, BLK_META);
+        mark_blk(f, dir, BLK_META);
         m->dirs++;
         f->visited++;
         if (f->dircache_fs) follow_dircache(f, (ULONG)tail(f->dirbuf, nl, 2));
@@ -254,7 +264,7 @@ static BOOL walk_directories(struct Ffs *f)
                     fs_note(c, "header block with bad checksum");
                     break;
                 }
-                FsMap_Set(m, blk, BLK_META);
+                mark_blk(f, blk, BLK_META);
                 f->visited++;
                 sec = tail(f->hdrbuf, nl, 1);
                 {
@@ -325,7 +335,10 @@ BOOL FfsMap_Build(struct FsCtx *c)
     FsMap_SetRange(m, 0, f.reserved, BLK_META);          /* boot blocks */
     if (!read_bitmap(&f)) goto done;
     if (!walk_directories(&f)) goto done;
-    if (m->count[BLK_UNKN] == 0) { /* recount happens in FsMap_Build */ }
+    if (f.ref_free) {
+        snprintf(m->note, sizeof(m->note), "%lu block(s) in use but free in the bitmap - validate this volume",
+                 (unsigned long)f.ref_free);
+    }
     ok = TRUE;
 
 done:

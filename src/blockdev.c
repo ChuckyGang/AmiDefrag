@@ -26,6 +26,12 @@
 #ifndef NSCMD_TD_READ64
 #define NSCMD_TD_READ64   0xC000
 #endif
+#ifndef TD_WRITE64
+#define TD_WRITE64 (CMD_NONSTD + 16)       /* 25 */
+#endif
+#ifndef NSCMD_TD_WRITE64
+#define NSCMD_TD_WRITE64  0xC001
+#endif
 
 struct NSDQuery {
     ULONG  DevQueryFormat;
@@ -38,6 +44,7 @@ struct NSDQuery {
 
 #ifdef AMIDEFRAG_HOST
 LONG  HostFilePRead(BPTR fh, void *buf, ULONG len, UQUAD off);
+LONG  HostFilePWrite(BPTR fh, const void *buf, ULONG len, UQUAD off);
 UQUAD HostFileSize(BPTR fh);
 #endif
 
@@ -86,8 +93,10 @@ static void probe_nsd(struct BlockDev *bd)
     if (bd->iotd.iotd_Req.io_Actual < 16 || !q.SupportedCommands) return;
     {
         UWORD *cmd;
-        for (cmd = q.SupportedCommands; *cmd; cmd++)
-            if (*cmd == NSCMD_TD_READ64) { bd->nsd_read64 = 1; break; }
+        for (cmd = q.SupportedCommands; *cmd; cmd++) {
+            if (*cmd == NSCMD_TD_READ64)  bd->nsd_read64  = 1;
+            if (*cmd == NSCMD_TD_WRITE64) bd->nsd_write64 = 1;
+        }
     }
 }
 
@@ -200,4 +209,75 @@ BOOL BlockDev_ReadBlocks(struct BlockDev *bd, ULONG start, ULONG count, void *bu
     if (bd->rd_pref == 1) return FALSE;          /* 64-bit path worked before: real error */
     if (rd_cmd(bd, start, count, buf)) { bd->rd_pref = 2; return TRUE; }
     return FALSE;
+}
+
+/* ------------------------------------------------------------------ */
+/* Writes (armed handles only)                                         */
+/* ------------------------------------------------------------------ */
+
+void BlockDev_ArmWrites(struct BlockDev *bd)
+{
+    if (bd) bd->writes_armed = TRUE;
+}
+
+static BOOL wr_64(struct BlockDev *bd, ULONG start, ULONG count, const void *buf)
+{
+    UQUAD off = (UQUAD)start * bd->block_size;
+    bd->iotd.iotd_Req.io_Command = bd->nsd_write64 ? NSCMD_TD_WRITE64 : TD_WRITE64;
+    bd->iotd.iotd_Req.io_Length  = count * bd->block_size;
+    bd->iotd.iotd_Req.io_Data    = (APTR)buf;
+    bd->iotd.iotd_Req.io_Offset  = (ULONG)off;
+    bd->iotd.iotd_Req.io_Actual  = (ULONG)(off >> 32);
+    bd->iotd.iotd_Req.io_Flags   = 0;
+    return DoIO((struct IORequest *)&bd->iotd) == 0;
+}
+
+static BOOL wr_cmd(struct BlockDev *bd, ULONG start, ULONG count, const void *buf)
+{
+    UQUAD off = (UQUAD)start * bd->block_size;
+    if ((off >> 32) != 0) return FALSE;
+    bd->iotd.iotd_Req.io_Command = CMD_WRITE;
+    bd->iotd.iotd_Req.io_Length  = count * bd->block_size;
+    bd->iotd.iotd_Req.io_Data    = (APTR)buf;
+    bd->iotd.iotd_Req.io_Offset  = (ULONG)off;
+    bd->iotd.iotd_Req.io_Actual  = 0;
+    bd->iotd.iotd_Req.io_Flags   = 0;
+    return DoIO((struct IORequest *)&bd->iotd) == 0;
+}
+
+BOOL BlockDev_WriteBlocks(struct BlockDev *bd, ULONG start, ULONG count, const void *buf)
+{
+    if (!bd || !bd->open || !bd->writes_armed || count == 0) return FALSE;
+    bd->writes += count;
+
+    if (bd->backend == BD_FILE) {
+#ifdef AMIDEFRAG_HOST
+        ULONG len = count * bd->block_size;
+        return HostFilePWrite(bd->fh, buf, len, (UQUAD)start * bd->block_size) == (LONG)len;
+#else
+        UQUAD off = (UQUAD)start * bd->block_size;
+        LONG  len = (LONG)(count * bd->block_size);
+        if (off > 0x7FFFFFFFULL) return FALSE;
+        if (Seek(bd->fh, (LONG)off, OFFSET_BEGINNING) < 0) return FALSE;
+        return Write(bd->fh, (APTR)buf, len) == len;
+#endif
+    }
+
+    if (bd->wr_pref == 2) return wr_cmd(bd, start, count, buf);
+    if (wr_64(bd, start, count, buf)) { bd->wr_pref = 1; return TRUE; }
+    if (bd->wr_pref == 1) return FALSE;
+    if (wr_cmd(bd, start, count, buf)) { bd->wr_pref = 2; return TRUE; }
+    return FALSE;
+}
+
+BOOL BlockDev_Update(struct BlockDev *bd)
+{
+    if (!bd || !bd->open) return FALSE;
+    if (bd->backend == BD_FILE) return TRUE;
+    bd->iotd.iotd_Req.io_Command = CMD_UPDATE;
+    bd->iotd.iotd_Req.io_Length  = 0;
+    bd->iotd.iotd_Req.io_Data    = NULL;
+    bd->iotd.iotd_Req.io_Flags   = 0;
+    DoIO((struct IORequest *)&bd->iotd);      /* drivers without it return an error: fine */
+    return TRUE;
 }

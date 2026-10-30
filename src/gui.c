@@ -33,6 +33,7 @@
 #include "blockdev.h"
 #include "volume.h"
 #include "fsmap.h"
+#include "ffs_defrag.h"
 #include "gui.h"
 #include "version.h"
 
@@ -63,6 +64,7 @@ struct Gui {
     /* state */
     struct FsMap map;
     BOOL  have_map;
+    WORD  map_vol;               /* volume index the map belongs to */
     BOOL  quit;
     BOOL  scanning;
     char  status[300];
@@ -185,6 +187,39 @@ static void redraw_all(struct Gui *g)
     draw_text_line(g, g->status_y, g->status);
 }
 
+static void draw_cells(struct Gui *g, ULONG first_cell, ULONG last_cell)
+{
+    struct RastPort *rp = g->win->RPort;
+    ULONG cells = (ULONG)g->cols * g->rows, per, i;
+    if (!g->have_map || cells == 0) return;
+    per = (g->map.nblocks + cells - 1) / cells;
+    if (per == 0) per = 1;
+    if (last_cell >= cells) last_cell = cells - 1;
+    for (i = first_cell; i <= last_cell && i * per < g->map.nblocks; i++) {
+        UBYTE c = FsMap_Cell(&g->map, i * per, per);
+        UWORD cx = g->map_x + (i % g->cols) * PITCH;
+        UWORD cy = g->map_y + (i / g->cols) * PITCH;
+        SetAPen(rp, g->pen[c]);
+        RectFill(rp, cx, cy, cx + CELL - 1, cy + CELL - 1);
+    }
+}
+
+/* Repaint the cells covering blocks [blk, blk+n). */
+static void draw_blocks(struct Gui *g, ULONG blk, ULONG n)
+{
+    ULONG cells = (ULONG)g->cols * g->rows, per;
+    if (!g->have_map || cells == 0 || n == 0) return;
+    per = (g->map.nblocks + cells - 1) / cells;
+    if (per == 0) per = 1;
+    draw_cells(g, blk / per, (blk + n - 1) / per);
+}
+
+static void set_defrag_enabled(struct Gui *g, BOOL on)
+{
+    struct TagItem t[] = { { GA_Disabled, !on }, { TAG_DONE, 0 } };
+    GT_SetGadgetAttrsA(g->defrag_gad, g->win, NULL, t);
+}
+
 /* ------------------------------------------------------------------ */
 /* volume list                                                         */
 /* ------------------------------------------------------------------ */
@@ -289,6 +324,7 @@ static void analyze(struct Gui *g)
     if (v->fskind == FS_UNKNOWN) { set_status(g, "Unsupported filesystem on this partition."); return; }
 
     if (g->have_map) { FsMap_Free(&g->map); g->have_map = FALSE; }
+    set_defrag_enabled(g, FALSE);
     draw_map_frame(g);
 
     bd = BlockDev_Open(v->devname, v->unit);
@@ -303,8 +339,10 @@ static void analyze(struct Gui *g)
     g->last_pct = 0xFFFFFFFFUL;
     if (FsMap_Build(bd, v, &g->map, scan_progress, g)) {
         g->have_map = TRUE;
+        g->map_vol  = g->selected;
         draw_map(g);
         summarize(g);
+        set_defrag_enabled(g, v->fskind == FS_FFS && !v->is_boot && g->map.frag_files > 0);
     } else {
         char s[160];
         AD_SNPRINTF(s, "%s: %s", v->dosname, g->map.note);
@@ -313,6 +351,107 @@ static void analyze(struct Gui *g)
     g->scanning = FALSE;
     GT_SetGadgetAttrsA(g->analyze_gad, g->win, NULL, ena);
     BlockDev_Close(bd);
+}
+
+/* ------------------------------------------------------------------ */
+/* defragment                                                          */
+/* ------------------------------------------------------------------ */
+
+static void defrag_log(void *ud, const char *line)
+{
+    set_status((struct Gui *)ud, line);
+}
+
+/* Engine callback: a block range changed class (cls 0xFF = idle poll). */
+static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+{
+    struct Gui *g = (struct Gui *)ud;
+    struct IntuiMessage *imsg;
+    if (cls != 0xFF && g->have_map) {
+        FsMap_SetRange(&g->map, blk, n, cls);
+        draw_blocks(g, blk, n);
+    }
+    while ((imsg = GT_GetIMsg(g->win->UserPort)) != NULL) {
+        ULONG iclass = imsg->Class;
+        GT_ReplyIMsg(imsg);
+        if (iclass == IDCMP_CLOSEWINDOW) g->quit = TRUE;
+        else if (iclass == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(g->win); redraw_all(g); GT_EndRefresh(g->win, TRUE); }
+    }
+    return !g->quit;
+}
+
+static LONG ask(struct Gui *g, const char *title, const char *body, const char *gadgets)
+{
+    struct EasyStruct es;
+    es.es_StructSize   = sizeof(es);
+    es.es_Flags        = 0;
+    es.es_Title        = (UBYTE *)title;
+    es.es_TextFormat   = (UBYTE *)body;
+    es.es_GadgetFormat = (UBYTE *)gadgets;
+    return EasyRequestArgs(g->win, &es, NULL, NULL);
+}
+
+static void defragment(struct Gui *g)
+{
+    struct VolumeInfo *v;
+    struct BlockDev *bd;
+    struct FfsDefragOpts  o;
+    struct FfsDefragStats st;
+    char err[128], body[400];
+    LONG rc;
+
+    if (!g->have_map || g->map_vol < 0 || g->map_vol >= (WORD)g->vols->count) return;
+    v = &g->vols->v[g->map_vol];
+    if (v->fskind != FS_FFS) { set_status(g, "Only OFS/FFS volumes can be defragmented in this version."); return; }
+    if (v->is_boot) { set_status(g, "The boot volume is not defragmented in this version."); return; }
+
+    bd = BlockDev_Open(v->devname, v->unit);
+    if (!bd) { set_status(g, "Cannot open the device."); return; }
+
+    /* dry run first: tells the user what will happen before anything is written */
+    memset(&o, 0, sizeof(o));
+    o.dry_run = TRUE;
+    set_defrag_enabled(g, FALSE);
+    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, NULL, g, &st, err, sizeof(err));
+    if (rc == RETURN_ERROR || st.candidates == 0) {
+        AD_SNPRINTF(body, "%s", err[0] ? err : "Nothing to defragment.");
+        set_status(g, body);
+        BlockDev_Close(bd);
+        set_defrag_enabled(g, TRUE);
+        return;
+    }
+    AD_SNPRINTF(body,
+        "Defragment %s (%s:)?\n\n"
+        "%lu fragmented file(s), %lu blocks.\n"
+        "%lu can be made contiguous, %lu have no free run large enough.\n\n"
+        "The volume is inhibited while this runs: nothing else must\n"
+        "write to it. Files are moved one at a time; a crash leaves the\n"
+        "volume valid (the filesystem may validate it on the next mount).",
+        g->map.volname, v->dosname, (unsigned long)st.candidates, (unsigned long)st.cand_blocks,
+        (unsigned long)st.moved, (unsigned long)st.skipped_space);
+    if (ask(g, "AmiDefrag", body, "Defragment|Cancel") != 1) {
+        set_status(g, "Cancelled.");
+        BlockDev_Close(bd);
+        set_defrag_enabled(g, TRUE);
+        return;
+    }
+
+    o.dry_run = FALSE;
+    g->scanning = TRUE;
+    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
+    g->scanning = FALSE;
+    BlockDev_Close(bd);
+
+    if (g->have_map) { FsMap_Recount(&g->map); g->map.frag_files = st.candidates - st.moved; draw_map(g); }
+    AD_SNPRINTF(body, "%s: %lu of %lu file(s) made contiguous (%lu blocks), %lu skipped for space%s%s%s",
+        g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
+        (unsigned long)st.moved_blocks, (unsigned long)st.skipped_space,
+        st.needs_validation ? " - VOLUME NEEDS VALIDATION" : "",
+        err[0] ? " - " : "", err);
+    set_status(g, body);
+    if (rc == RETURN_FAIL || st.needs_validation)
+        ask(g, "AmiDefrag", "The run stopped after writes began.\nThe bitmap was left marked invalid on purpose:\nthe filesystem will validate the volume on the next mount.\nRun AmiDefrag again afterwards to finish.", "OK");
+    set_defrag_enabled(g, !st.needs_validation && (st.candidates - st.moved) > 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -335,7 +474,7 @@ static void handle_msg(struct Gui *g, ULONG iclass, UWORD code, struct Gadget *g
         case GID_LIST:    g->selected = (WORD)code; break;
         case GID_ANALYZE: analyze(g); break;
         case GID_RESCAN:  rescan(g); set_status(g, "Volume list refreshed."); break;
-        case GID_DEFRAG:  break;
+        case GID_DEFRAG:  if (!g->scanning) defragment(g); break;
         }
         break;
     }
@@ -416,7 +555,7 @@ static BOOL build_window(struct Gui *g)
             { WA_Top,       (ULONG)((g->scr->Height - g->win_h) / 2) },
             { WA_Width,     g->win_w },
             { WA_Height,    g->win_h },
-            { WA_Title,     (ULONG)AMIDEFRAG_VERTITLE " - read-only preview" },
+            { WA_Title,     (ULONG)AMIDEFRAG_VERTITLE },
             { WA_Gadgets,   (ULONG)g->glist },
             { WA_PubScreen, (ULONG)g->scr },
             { WA_IDCMP,     IDCMP_CLOSEWINDOW | IDCMP_GADGETUP | IDCMP_REFRESHWINDOW |

@@ -13,10 +13,11 @@
 #include "volume.h"
 #include "fsmap.h"
 #include "cli.h"
+#include "ffs_defrag.h"
 #include "version.h"
 
-#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,DEBUG/S"
-enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_DEBUG, A_COUNT };
+#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
+enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_COUNT };
 
 static void out(const char *s) { PutStr((CONST_STRPTR)s); }
 
@@ -28,6 +29,46 @@ static void outf(const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     out(buf);
+}
+
+static void cli_log(void *ud, const char *line) { (void)ud; out(line); out("\n"); }
+
+static BOOL cli_confirm(void)
+{
+    char buf[16];
+    LONG n;
+    out("Type YES to defragment this volume: ");
+    Flush(Output());
+    n = Read(Input(), buf, sizeof(buf) - 1);
+    if (n <= 0) return FALSE;
+    buf[n] = '\0';
+    return buf[0] == 'Y' && buf[1] == 'E' && buf[2] == 'S';
+}
+
+static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry, BOOL force)
+{
+    struct FfsDefragOpts  o;
+    struct FfsDefragStats st;
+    char err[128];
+    LONG rc;
+
+    if (v->fskind != FS_FFS) { out("DEFRAG: only OFS/FFS volumes in this version.\n"); return RETURN_ERROR; }
+    memset(&o, 0, sizeof(o));
+    o.dry_run = dry;
+    if (!dry && !force) {
+        outf("About to defragment %s (%s). Fragmented files are moved one at a time; the volume\n"
+             "is inhibited while this runs. Make sure nothing writes to it.\n", v->dosname, v->devname);
+        if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
+    }
+    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, NULL, NULL, &st, err, sizeof(err));
+    if (err[0]) outf("%s\n", err);
+    outf("%s: %lu fragmented, %lu %s (%lu blocks), %lu skipped for space, %lu skipped with errors%s\n",
+         dry ? "Dry run" : "Done", (unsigned long)st.candidates, (unsigned long)st.moved,
+         dry ? "would move" : "moved", (unsigned long)st.moved_blocks,
+         (unsigned long)st.skipped_space, (unsigned long)st.skipped_error,
+         st.needs_validation ? " - VOLUME NEEDS VALIDATION" : "");
+    outf("Device I/O: %lu blocks read, %lu written\n", (unsigned long)bd->reads, (unsigned long)bd->writes);
+    return rc;
 }
 
 static BOOL cli_progress(void *ud, ULONG done, ULONG total, const char *what)
@@ -184,6 +225,12 @@ LONG cli_run(void)
         if (!bd) { outf("Cannot open %s unit %lu\n", v->devname, (unsigned long)v->unit); rc = RETURN_ERROR; goto done; }
     }
 
+    /* DEFRAG goes straight to the engine: it has its own checks and its
+     * journal recovery must run even when the map cannot be built. */
+    if (args[A_DEFRAG] || args[A_DRYRUN]) {
+        rc = run_defrag(bd, v, args[A_DRYRUN] != 0, args[A_FORCE] != 0);
+        goto done;
+    }
     if (!FsMap_Build(bd, v, &map, cli_progress, NULL)) {
         outf("%s: %s\n", v->dosname, map.note);
         rc = RETURN_WARN;

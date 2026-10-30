@@ -68,6 +68,8 @@ struct IOStdReq  { struct Message io_Message; APTR io_Device; APTR io_Unit; UWOR
 struct IOExtTD   { struct IOStdReq iotd_Req; ULONG iotd_Count; ULONG iotd_SecLabel; };
 
 #define CMD_READ       2
+#define CMD_WRITE      3
+#define CMD_UPDATE     4
 #define CMD_NONSTD     9
 #define TD_GETGEOMETRY 18
 
@@ -97,6 +99,9 @@ LONG  Read(BPTR fh, void *buf, LONG len);
 LONG  Seek(BPTR fh, LONG pos, LONG mode);
 LONG  IoErr(void);
 void  PutStr(CONST_STRPTR s);
+BPTR  Input(void);
+BPTR  Output(void);
+LONG  Flush(BPTR fh);
 void  PrintFault(LONG code, CONST_STRPTR hdr);
 ULONG SetSignal(ULONG new_sig, ULONG mask);
 struct MsgPort *CreateMsgPort(void);

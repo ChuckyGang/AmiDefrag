@@ -35,6 +35,7 @@ struct VolumeInfo {
     ULONG num_blocks;       /* device blocks in the partition */
     ULONG lowcyl, highcyl, heads, bpt;
     BOOL  mounted;
+    BOOL  is_boot;          /* handler also serves SYS: */
 };
 
 #define MAX_VOLUMES 32
