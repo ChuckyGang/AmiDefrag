@@ -1,0 +1,9 @@
+obj/
+out/
+test/*.hdf
+test/work/
+host/amidefrag
+# emulator droppings when the repo dir is mounted as a drive
+Disk.info
+Disk.info.uaem
+__pycache__/

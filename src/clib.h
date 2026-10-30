@@ -1,0 +1,54 @@
+/*
+ * clib.h - Minimal C library declarations for AmiDefrag.
+ *
+ * -nostdlib build: this replaces <string.h>, <stdio.h>, <stdlib.h>.
+ *
+ * strlen/memset/memcpy/memmove: support/gcc8_c_support.c
+ * sprintf/snprintf/strcmp/strncpy/strcpy/strtoul/strtol: src/clib.c
+ */
+
+#ifndef CLIB_H
+#define CLIB_H
+
+/* Pointer-sized signed integer for ReadArgs result slots.  On the Amiga
+   pointers are 32-bit and this is plain LONG (zero change); on a 64-bit
+   host build the compat layer defines AD_SIPTR_DEFINED and provides a
+   pointer-width type instead, so string pointers stored in the args
+   array are not truncated. */
+#ifndef AD_SIPTR_DEFINED
+#define AD_SIPTR_DEFINED
+typedef signed long SIPTR;   /* m68k: 32-bit, same as LONG */
+#endif
+
+#include <stddef.h>   /* size_t */
+#include <stdarg.h>
+
+extern size_t strlen(const char *s);
+extern void  *memset(void *dst, int c, size_t n);
+extern void  *memcpy(void *dst, const void *src, size_t n);
+extern void  *memmove(void *dst, const void *src, size_t n);
+extern int    memcmp (const void *a, const void *b, size_t n);
+
+int   sprintf (char *buf,             const char *fmt, ...);
+int   snprintf(char *buf, size_t size, const char *fmt, ...);
+int   vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+
+/* AD_SNPRINTF(arr, fmt, ...) - snprintf bounded by sizeof(arr).
+ * Compile-time guard: if 'arr' is a pointer (not a real array) sizeof would
+ * silently be the pointer size and truncate, so AD_IS_ARRAY forces a build
+ * error instead.  Use only with in-scope fixed char arrays; for caller-owned
+ * pointer buffers keep plain snprintf with the explicit size. */
+#define AD_IS_ARRAY(a) \
+    (!__builtin_types_compatible_p(__typeof__(a), __typeof__(&(a)[0])))
+#define AD_BUILD_BUG_IF(e) \
+    ((int)(sizeof(struct { int _dpchk : (1 - 2 * !!(e)); })) * 0)
+#define AD_SNPRINTF(arr, ...) \
+    snprintf((arr), sizeof(arr) + AD_BUILD_BUG_IF(!AD_IS_ARRAY(arr)), __VA_ARGS__)
+int   strcmp(const char *a, const char *b);
+char *strncpy(char *dst, const char *src, size_t n);
+char *strcpy (char *dst, const char *src);
+
+unsigned long strtoul(const char *s, char **end, int base);
+long          strtol (const char *s, char **end, int base);
+
+#endif /* CLIB_H */

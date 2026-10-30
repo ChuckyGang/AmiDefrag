@@ -1,0 +1,5 @@
+{
+    "program": "out/AmiDefrag",
+    "includePath": [ "${workspaceFolder}/src" ],
+    "defines": [ "NO_INLINE_STDARG" ]
+}

@@ -1,0 +1,132 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate icon
+        run: |
+          pip install pillow -q
+          make icon
+
+      # Bartman's m68k-amiga-elf-gcc + elf2hunk, fetched from the VS Code
+      # extension's .vsix (same toolchain the F5 debug loop uses).
+      - name: Cache Bartman toolchain
+        id: bartman-cache
+        uses: actions/cache@v4
+        with:
+          path: bartman
+          key: bartman-amiga-debug-1.8.2
+
+      - name: Fetch Bartman toolchain
+        if: steps.bartman-cache.outputs.cache-hit != 'true'
+        env:
+          BARTMAN_VERSION: 1.8.2
+        run: |
+          curl -fsSL -o bartman.vsix \
+            "https://bartmanabyss.gallery.vsassets.io/_apis/public/gallery/publisher/bartmanabyss/extension/amiga-debug/${BARTMAN_VERSION}/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
+          unzip -q bartman.vsix -d bartman
+          rm bartman.vsix
+
+      - name: Build with Bartman toolchain
+        run: |
+          BARTMAN="$PWD/bartman/extension/bin/linux"
+          chmod +x "$BARTMAN/elf2hunk"
+          find "$BARTMAN/opt/bin" "$BARTMAN/opt/libexec" "$BARTMAN/opt/m68k-amiga-elf/bin" \
+               -type f -exec chmod +x {} +
+          make TOOLCHAIN=bartman BARTMAN="$BARTMAN"
+
+      - name: Upload binary + icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: AmiDefrag
+          path: |
+            out/AmiDefrag
+            out/AmiDefrag.info
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build native Linux CLI
+        run: make linux
+
+      # Real FFS made by xdftool: the map must parse it, find the files and
+      # report the fragmentation the delete/rewrite pattern creates.
+      - name: FFS smoke test (xdftool image)
+        run: |
+          pip install amitools machine68k==0.3.0 -q
+          cd host
+          xdftool ci.hdf create chs=20,16,63 + format CITest ffs
+          head -c 300000 /dev/urandom > a.bin
+          head -c 200000 /dev/urandom > b.bin
+          xdftool ci.hdf write a.bin a1 + write b.bin b1 + write a.bin a2 + write b.bin b2 + write a.bin a3
+          xdftool ci.hdf delete a1 + delete a2
+          head -c 500000 /dev/urandom > c.bin
+          xdftool ci.hdf write c.bin c1 + makedir d + write b.bin d/b3
+          ./amidefrag IMAGE=ci.hdf LIST
+          ./amidefrag IMAGE=ci.hdf MAP | tee ci.out
+          grep -q "fragmented: 1 " ci.out
+          grep -q "unknown  *0 blocks" ci.out
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: amidefrag-linux-x86_64
+          path: host/amidefrag
+          if-no-files-found: error
+
+  release:
+    needs: [build, build-linux]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: AmiDefrag
+          path: out
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: amidefrag-linux-x86_64
+          path: linux-out
+      - name: Set release date
+        id: date
+        run: echo "DATE=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+      - name: Create LHA archive
+        run: |
+          ARCHIVE="AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha"
+          python3 support/make_lha.py "$ARCHIVE" \
+            "AmiDefrag:out/AmiDefrag" \
+            "AmiDefrag.info:out/AmiDefrag.info" \
+            "README.md:README.md"
+          ls -lh "$ARCHIVE"
+      - name: Replace rolling PROTO release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete proto --yes 2>/dev/null || true
+          git push --delete origin proto 2>/dev/null || true
+          gh release create proto \
+            --title "AmiDefrag ${{ steps.date.outputs.DATE }} PROTO" \
+            --notes "Automated prototype build from commit \`${{ github.sha }}\`. Read-only volume map; no defragmentation yet." \
+            --prerelease \
+            "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
+            "linux-out/amidefrag#amidefrag-linux-x86_64"
