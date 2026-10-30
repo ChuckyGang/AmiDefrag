@@ -133,7 +133,7 @@ void Volume_EnumerateMounted(struct VolumeList *vl)
 
             v = &vl->v[vl->count];
             memset(v, 0, sizeof(*v));
-            bstr_copy(v->dosname, sizeof(v->dosname), MKBADDR(d->dol_Name));
+            bstr_copy(v->dosname, sizeof(v->dosname), d->dol_Name);   /* dol_Name is a BSTR already */
             strncpy(v->devname, devname, sizeof(v->devname) - 1);
             v->unit    = fssm->fssm_Unit;
             v->mounted = (d->dol_Task != NULL);
@@ -153,8 +153,7 @@ void Volume_EnumerateMounted(struct VolumeList *vl)
             if (!d->dol_Task) continue;
             for (i = 0; i < vl->count; i++) {
                 if (tasks[i] == d->dol_Task && vl->v[i].volname[0] == '\0') {
-                    bstr_copy(vl->v[i].volname, sizeof(vl->v[i].volname),
-                              MKBADDR(d->dol_Name));
+                    bstr_copy(vl->v[i].volname, sizeof(vl->v[i].volname), d->dol_Name);
                     break;
                 }
             }
