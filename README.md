@@ -9,6 +9,13 @@ built so that the disk is **never left in a dangerous state**.
 > SFS are map-only so far. Tested on images and under emulation; treat the
 > engine as beta on real disks and keep backups.
 
+## Download
+
+**[Latest build](https://github.com/ChuckyGang/AmiDefrag/releases/latest)** — the
+Amiga executable with icon in an LHA archive, plus the native Linux CLI.
+Click **Assets** on that page to see the files. Every push to `main` replaces
+the rolling `proto` prerelease and keeps a dated copy.
+
 **Director:** John Hertell — john(at)hertell.nu
 **Code:** Claude Code (Anthropic)
 

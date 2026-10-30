@@ -130,3 +130,17 @@ jobs:
             --prerelease \
             "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
             "linux-out/amidefrag#amidefrag-linux-x86_64"
+
+      # The rolling "proto" release is replaced on every push; keep a dated
+      # copy as well so earlier builds stay downloadable (as AmiPart does).
+      - name: Keep a dated copy of this build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="proto-${{ steps.date.outputs.DATE }}-${GITHUB_SHA::7}"
+          gh release create "$TAG" \
+            --title "AmiDefrag ${{ steps.date.outputs.DATE }} (${GITHUB_SHA::7})" \
+            --notes "Archived prototype build from commit \`${{ github.sha }}\`. The rolling \`proto\` release always has the newest build." \
+            --prerelease \
+            "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
+            "linux-out/amidefrag#amidefrag-linux-x86_64"
