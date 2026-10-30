@@ -6,6 +6,7 @@
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include "clib.h"
@@ -75,9 +76,21 @@ static BOOL pf_delete_journal(void *ud, const struct VolumeInfo *v)
 {
     char path[64];
     (void)ud;
+    BOOL ok;
     if (no_handler(v)) return TRUE;
     snprintf(path, sizeof(path), "%s:" FFS_JOURNAL_NAME, v->dosname);
-    return DeleteFile((CONST_STRPTR)path) != 0;
+    ok = DeleteFile((CONST_STRPTR)path) != 0;
+    /* The delete marks the root dirty; FFS would set the bitmap flag valid
+     * again only when its idle timer fires.  Ask it to flush now so an
+     * Analyze right after the run does not show "needs validation". */
+    {
+        char dev[40];
+        struct MsgPort *port;
+        devname_colon(v, dev, sizeof(dev));
+        port = DeviceProc((CONST_STRPTR)dev);
+        if (port) DoPkt(port, ACTION_FLUSH, 0, 0, 0, 0, 0);
+    }
+    return ok;
 }
 
 static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL };
