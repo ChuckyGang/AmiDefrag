@@ -90,6 +90,7 @@ make                 # Amiga binary out/AmiDefrag (+ .info), Bartman toolchain
 make linux           # native Linux CLI host/amidefrag (image mode, plain gcc)
 make testdisk        # test/test.hdf: FFS + PFS3 + SFS partitions with files
 python3 test/ffsfuzz.py 10   # FFS engine fuzz loop with crash replay (needs xdftool)
+test/make_bigfrag.py --fs ffs   # 1 GB torture image (also pfs3 / sfs), see below
 ```
 
 Toolchain selection, paths and the Bebbo alternative are the same as in
@@ -127,6 +128,25 @@ three test partitions show up in the volume list. `make testdisk` builds
 that image with AmiPart's host CLI, xdftool and (when present) amifuse
 with the real pfs3aio / SmartFilesystem handlers.
 
+### Big fragmented test images
+
+`test/make_bigfrag.py --fs ffs|pfs3|sfs [--size-mb 1024]` builds an RDB
+image with one partition (`FRG0`/`FRG1`/`FRG2`, handler embedded in the
+RDB) whose files are shredded on purpose. It mounts the partition
+read-write through amifuse with the *real* handler (FastFileSystem 3.2,
+pfs3aio, SmartFilesystem from `~/UAE/WB323/L`), fills the disk with
+alternating tiny filler files, deletes every other one so the free space
+becomes a sieve of 1-16 KB holes, copies real files into the holes
+(`~/UAE/WB323` and `/mnt/share/Amiga/Demos` by default, `--src` to
+change), then deletes the remaining fillers. Result: every file larger
+than a hole is in many pieces, free space is riddled with small gaps,
+and one large free run is left at the end. The emulated handlers manage
+roughly 2 MB/s and 30-80 small files a second, so a 1 GB image takes from
+about an hour (FFS) to several hours (PFS3, SFS); run the three in
+parallel. The images are plain RDB hardfiles for Amiberry (attach as
+IDE, not uaehf, so the embedded PFS3/SFS handler loads) or for `dd` onto
+a scratch card.
+
 ## Layout
 
 ```
@@ -135,7 +155,7 @@ src/        shared core: blockdev (read-only I/O), volume (DosList / RDB),
             cli (ReadArgs mode), gui (GadTools window), main
 host/       Linux build: amiga_compat.h, amiga_shim.c, host_rdargs.c, host_main.c
 support/    Bartman runtime support, icon generator, LHA packer
-test/       make_testdisk.sh (test.hdf is generated, not committed)
+test/       make_testdisk.sh, make_bigfrag.py, ffsfuzz.py (images are generated, not committed)
 ```
 
 ## References
