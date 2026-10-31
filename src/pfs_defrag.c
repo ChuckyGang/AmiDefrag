@@ -728,14 +728,27 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
      * chains read back would no longer match the simulated bitmap). */
     if (opts->dry_run) stats->needs_room = e->later.n / 2;
     else if (!stats->aborted && e->later.n) {
+        /* rounds: a file whose holes were all blocked may get its room
+         * once the later files have moved things around, so the
+         * leftovers are tried again while a round still gets some done */
+        ULONG round = 0, before, left;
         later_sort(&e->later);
         elog(e, "%lu file(s) need room made: moving neighbours aside", (unsigned long)(e->later.n / 2));
-        for (i = 0; i < e->later.n / 2; i++) {
-            LONG r = process_file(e, e->later.v[2 * i], TRUE, NULL);
-            if (r == PF_FATAL) { rc = e->writes_begun ? RETURN_FAIL : RETURN_ERROR; goto done; }
-            if (r == PF_NOSPACE) stats->skipped_space++;
-            if (stats->aborted || (e->move && !e->move(e->ud, 0, 0, 0xFF))) { stats->aborted = TRUE; break; }
-        }
+        do {
+            before = e->later.n / 2;
+            left = 0;
+            for (i = 0; i < before; i++) {
+                LONG r = process_file(e, e->later.v[2 * i], TRUE, NULL);
+                if (r == PF_FATAL) { rc = e->writes_begun ? RETURN_FAIL : RETURN_ERROR; goto done; }
+                if (r == PF_NOSPACE) { e->later.v[2 * left] = e->later.v[2 * i]; e->later.v[2 * left + 1] = e->later.v[2 * i + 1]; left++; }
+                if (stats->aborted || (e->move && !e->move(e->ud, 0, 0, 0xFF))) { stats->aborted = TRUE; break; }
+            }
+            e->later.n = 2 * left;
+            round++;
+            if (!stats->aborted && left && left < before)
+                elog(e, "Round %lu: %lu file(s) still without room, trying again", (unsigned long)round, (unsigned long)left);
+        } while (!stats->aborted && left && left < before && round < 6);
+        if (!stats->aborted) stats->skipped_space += left;
     }
     if (!opts->dry_run) BlockDev_Update(bd);
     rc = (stats->skipped_space || stats->skipped_error || stats->aborted) ? RETURN_WARN : RETURN_OK;
