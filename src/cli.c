@@ -15,6 +15,8 @@
 #include "cli.h"
 #include "ffs_defrag.h"
 #include "sfs_defrag.h"
+
+extern BOOL AmiDefrag_Debug;
 #include "version.h"
 
 #define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
@@ -300,6 +302,7 @@ LONG cli_run(void)
         Volume_EnumerateMounted(vl);
     }
 
+    if (args[A_DEBUG]) AmiDefrag_Debug = TRUE;
     if (args[A_LIST]) { list_volumes(vl); goto done; }
 
     v = pick(vl, args[A_IMAGE] ? (const char *)args[A_PART] : (const char *)args[A_VOLUME]);

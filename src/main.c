@@ -10,6 +10,8 @@
  */
 #include <exec/types.h>
 #include <exec/execbase.h>
+#include <exec/memory.h>
+#include <exec/tasks.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <intuition/intuition.h>
@@ -39,12 +41,60 @@ struct Library       *GadToolsBase  = NULL;
 /* Set by Bartman's _start on a Workbench launch (support/gcc8_c_support.c). */
 struct WBStartup *AmiDefrag_WBStartup = NULL;
 
+/* Set by cli.c when DEBUG is given: the stack high-water mark is printed. */
+BOOL AmiDefrag_Debug = FALSE;
+
+/* AmiDefrag runs on its own stack: the icon gives 8 KB, a Shell often 4 KB,
+ * and the engines run dos packets, drawing and text formatting on top of
+ * each other.  The GUI SFS run froze the machine on the icon's 8 KB while
+ * the same run from a 200 KB Shell was fine (2026-10-31). */
+#define OWN_STACK_SIZE (64UL * 1024UL)
+#define STACK_FILL     0xA5
+
+static int amidefrag_main(void);
+
+static ULONG stack_used(const UBYTE *lower, ULONG size)
+{
+    ULONG i;
+    for (i = 0; i < size; i++)
+        if (lower[i] != STACK_FILL) break;
+    return size - i;
+}
+
 int main(void)
+{
+    struct StackSwapStruct sss;
+    UBYTE *stk;
+    int rc;
+
+    SysBase = *((struct ExecBase **)4UL);
+    stk = (UBYTE *)AllocMem(OWN_STACK_SIZE, MEMF_PUBLIC);
+    if (!stk) return amidefrag_main();
+    memset(stk, STACK_FILL, OWN_STACK_SIZE);
+    sss.stk_Lower   = stk;
+    sss.stk_Upper   = (ULONG)(stk + OWN_STACK_SIZE);
+    sss.stk_Pointer = (APTR)sss.stk_Upper;
+    StackSwap(&sss);
+    rc = amidefrag_main();
+    StackSwap(&sss);
+    if (AmiDefrag_Debug) {
+        struct DosLibrary *dl = (struct DosLibrary *)OpenLibrary("dos.library", 37);
+        if (dl) {
+            struct DosLibrary *saved = DOSBase;
+            DOSBase = dl;
+            Printf("Stack used: %lu of %lu bytes\n", stack_used(stk, OWN_STACK_SIZE), OWN_STACK_SIZE);
+            DOSBase = saved;
+            CloseLibrary((struct Library *)dl);
+        }
+    }
+    FreeMem(stk, OWN_STACK_SIZE);
+    return rc;
+}
+
+static int amidefrag_main(void)
 {
     int result = 0;
     { const char *volatile keep = amidefrag_ver; (void)*keep; }
-
-    SysBase = *((struct ExecBase **)4UL);
 
     DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
     if (!DOSBase) goto cleanup;

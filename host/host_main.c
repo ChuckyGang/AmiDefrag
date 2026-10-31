@@ -3,6 +3,7 @@
 #include "amiga_compat.h"
 #include "cli.h"
 
+BOOL  AmiDefrag_Debug;   /* set by cli.c DEBUG; the stack readout is Amiga-only */
 int   host_argc;
 char **host_argv;
 
