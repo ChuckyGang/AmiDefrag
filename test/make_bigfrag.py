@@ -119,32 +119,49 @@ def copy_file(src, dst):
             raise Full()
         raise
 
-def cleanup_fillers(mnt):
-    """Delete the tail filler, every file left in the sieve directories and
-    the directories themselves. Tolerant: the handlers (through amifuse)
-    turn flaky right after a hard disk-full, so each delete is retried and
-    failures are counted instead of aborting. Returns the failure count."""
+def rm_retry(path, isdir=False):
+    """Delete with retries; a missing object counts as done."""
+    for _ in range(3):
+        try:
+            (os.rmdir if isdir else os.remove)(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+def cleanup_known(mnt, gaps, dirs):
+    """In-session cleanup by the names we created, no directory listing:
+    amifuse's readdir (Examine/ExNext) never returns on 1 GB PFS3 volumes
+    although create, Lock and Delete work, so listdir would see nothing."""
     failed = 0
-    def rm(path, isdir=False):
-        for _ in range(3):
-            try:
-                (os.rmdir if isdir else os.remove)(path)
-                return True
-            except FileNotFoundError:
-                return True
-            except OSError:
-                time.sleep(0.2)
-        return False
-    if not rm(os.path.join(mnt, "zz_tail")): failed += 1
+    if not rm_retry(os.path.join(mnt, "zz_tail")): failed += 1
+    for i, p in enumerate(gaps):
+        if not rm_retry(p): failed += 1
+        if (i + 1) % 10000 == 0: log(f"cleanup: {i + 1}/{len(gaps)} gap files, {failed} failures")
+    for d in range(dirs):
+        if not rm_retry(os.path.join(mnt, f"sieve{d:04d}"), isdir=True): failed += 1
+    return failed
+
+def cleanup_fillers(mnt):
+    """--cleanup-only: delete the tail filler, every file left in the sieve
+    directories and the directories themselves, by listing them. Works for
+    FFS and SFS; on 1 GB PFS3 amifuse cannot list directories (see above),
+    so leftovers there must be deleted on the Amiga. Returns failures."""
+    failed = 0
+    if not rm_retry(os.path.join(mnt, "zz_tail")): failed += 1
     try: tops = sorted(n for n in os.listdir(mnt) if n.startswith("sieve"))
     except OSError: tops = []
+    if not tops:
+        log("cleanup: no sieve directories listed (nothing left, or the handler cannot list directories)")
     for i, dn in enumerate(tops):
         d = os.path.join(mnt, dn)
         try: names = os.listdir(d)
         except OSError: names = []
         for n in names:
-            if not rm(os.path.join(d, n)): failed += 1
-        if not rm(d, isdir=True): failed += 1
+            if not rm_retry(os.path.join(d, n)): failed += 1
+        if not rm_retry(d, isdir=True): failed += 1
         if (i + 1) % 100 == 0: log(f"cleanup: {i + 1}/{len(tops)} dirs, {failed} failures")
     return failed
 
@@ -237,8 +254,8 @@ def main():
             f"{len(gaps)} gap files ({b_bytes // (1024*1024)} MB), {dirs} dirs")
 
         # 5. open the holes
-        for p in holes: os.remove(p)
-        log("holes opened")
+        hf = sum(0 if rm_retry(p) else 1 for p in holes)
+        log(f"holes opened ({hf} failures)")
 
         # 6. real files: own recursive walk so truncated directory names
         # are carried along to the destination path.
@@ -299,7 +316,7 @@ def main():
         # 7. remove tail and gaps. Tail first: SFS parks deleted files in
         # .recycled (FIFO, a few hundred entries) and the many gap deletions
         # that follow push the big tail file out of it again.
-        failed = cleanup_fillers(mnt)
+        failed = cleanup_known(mnt, gaps, dirs)
         log(f"tail and gap fillers removed ({failed} failures)")
     finally:
         if not a.keep_mounted:
