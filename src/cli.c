@@ -14,6 +14,7 @@
 #include "fsmap.h"
 #include "cli.h"
 #include "ffs_defrag.h"
+#include "sfs_defrag.h"
 #include "version.h"
 
 #define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
@@ -33,6 +34,9 @@ static void outf(const char *fmt, ...)
 
 static void cli_log(void *ud, const char *line) { (void)ud; out(line); out("\n"); }
 static BOOL cli_move(void *ud, ULONG blk, ULONG n, UBYTE cls);
+static BOOL cli_sfs_move(void *ud, ULONG src, ULONG dst, ULONG n);
+static BOOL cli_progress(void *ud, ULONG done, ULONG total, const char *what);
+static void print_stats(const struct VolumeInfo *v, const struct FsMap *m);
 
 static BOOL cli_confirm(void)
 {
@@ -46,6 +50,53 @@ static BOOL cli_confirm(void)
     return buf[0] == 'Y' && buf[1] == 'E' && buf[2] == 'S';
 }
 
+/* SFS: the SmartFilesystem handler's own defragmenter does the moving,
+ * one transaction-safe step at a time, with the volume mounted. */
+static LONG run_defrag_sfs(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry, BOOL force)
+{
+    struct SfsDefragStats st;
+    struct FsMap map;
+    ULONG nblocks, bsize;
+    char err[160];
+    LONG rc;
+
+    if (dry) {
+        out("DRYRUN: on SFS the handler's built-in defragmenter decides the moves, so there\n"
+            "is nothing to preview. It also packs files together to consolidate free space.\n");
+        return RETURN_WARN;
+    }
+    if (!SfsDefrag_Available(v)) {
+        out("DEFRAG: SFS is defragmented through the SmartFilesystem handler, so the volume\n"
+            "must be mounted; image files stay map-only.\n");
+        return RETURN_ERROR;
+    }
+    if (!FsMap_Build(bd, v, &map, cli_progress, NULL)) { outf("%s: %s\n", v->dosname, map.note); return RETURN_WARN; }
+    print_stats(v, &map);
+    nblocks = map.nblocks; bsize = map.blocksize;
+    FsMap_Free(&map);
+    if (!force) {
+        outf("EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n"
+             "AmiDefrag drives the defragmenter built into the SmartFilesystem handler of\n"
+             "%s (%s). The handler moves the blocks itself, one transaction-safe step at a\n"
+             "time; the volume stays mounted and usable. It also consolidates free space, so\n"
+             "it moves more than the fragmented files and can take long. Ctrl-C stops it\n"
+             "after the current step. Keep a FULL BACKUP anyway; the author accepts no\n"
+             "responsibility for any loss of data.\n", v->dosname, v->devname);
+        if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
+    }
+    rc = SfsDefrag_Run(v, nblocks, bsize, cli_log, cli_sfs_move, NULL, &st, err, sizeof(err));
+    if (err[0]) outf("%s\n", err);
+    if (st.aborted) out("Stopped at your request (Ctrl-C) after the current step; the volume is consistent.\n");
+    outf("%s: %lu blocks moved by the handler in %lu steps (%lu moves)\n",
+         rc == RETURN_OK ? "Done" : "Stopped", (unsigned long)st.moved_blocks,
+         (unsigned long)st.steps, (unsigned long)st.moves);
+    if ((rc == RETURN_OK || rc == RETURN_WARN) && FsMap_Build(bd, v, &map, cli_progress, NULL)) {
+        print_stats(v, &map);
+        FsMap_Free(&map);
+    }
+    return rc;
+}
+
 static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry, BOOL force)
 {
     struct FfsDefragOpts  o;
@@ -53,7 +104,8 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
     char err[128];
     LONG rc;
 
-    if (v->fskind != FS_FFS) { out("DEFRAG: only OFS/FFS volumes in this version.\n"); return RETURN_ERROR; }
+    if (v->fskind == FS_SFS) return run_defrag_sfs(bd, v, dry, force);
+    if (v->fskind != FS_FFS) { out("DEFRAG: only OFS/FFS and SFS volumes in this version.\n"); return RETURN_ERROR; }
     memset(&o, 0, sizeof(o));
     o.dry_run = dry;
     if (!dry && !force) {
@@ -83,18 +135,27 @@ static BOOL cli_progress(void *ud, ULONG done, ULONG total, const char *what)
     return (SetSignal(0, 0) & SIGBREAKF_CTRL_C) == 0;
 }
 
-/* Engine move callback: Ctrl-C stops the run after the file in flight.
- * The engine calls this for every block range it changes as well as for
- * its between-files poll (cls 0xFF), so the stop must stick once seen. */
+/* Ctrl-C stops a run after the file / step in flight.  The engines call
+ * their move callbacks for every block range they change as well as for
+ * the between-items poll, so the stop must stick once seen. */
 static BOOL cli_stop_seen;
-static BOOL cli_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+static BOOL cli_break(void)
 {
-    (void)ud; (void)blk; (void)n; (void)cls;
     if (!cli_stop_seen && (SetSignal(0, 0) & SIGBREAKF_CTRL_C)) {
         SetSignal(0, SIGBREAKF_CTRL_C);
         cli_stop_seen = TRUE;
     }
-    return !cli_stop_seen;
+    return cli_stop_seen;
+}
+static BOOL cli_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+{
+    (void)ud; (void)blk; (void)n; (void)cls;
+    return !cli_break();
+}
+static BOOL cli_sfs_move(void *ud, ULONG src, ULONG dst, ULONG n)
+{
+    (void)ud; (void)src; (void)dst; (void)n;
+    return !cli_break();
 }
 
 static void list_volumes(const struct VolumeList *vl)

@@ -35,6 +35,7 @@
 #include "volume.h"
 #include "fsmap.h"
 #include "ffs_defrag.h"
+#include "sfs_defrag.h"
 #include "gui.h"
 #include "version.h"
 
@@ -354,7 +355,8 @@ static void analyze(struct Gui *g)
         g->map_vol  = g->selected;
         draw_map(g);
         summarize(g);
-        set_defrag_enabled(g, v->fskind == FS_FFS && !v->is_boot && g->map.frag_files > 0);
+        set_defrag_enabled(g, g->map.frag_files > 0 &&
+                              ((v->fskind == FS_FFS && !v->is_boot) || SfsDefrag_Available(v)));
     } else {
         char s[160];
         AD_SNPRINTF(s, "%s: %s", v->dosname, g->map.note);
@@ -375,15 +377,12 @@ static void defrag_log(void *ud, const char *line)
     set_status((struct Gui *)ud, line);
 }
 
-/* Engine callback: a block range changed class (cls 0xFF = idle poll). */
-static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+/* Drain the window's messages during an engine run.  Returns FALSE when
+ * the run must stop (Stop button or close gadget); the engines stop
+ * between files / steps, so the item in flight is committed first. */
+static BOOL drain_run_msgs(struct Gui *g, const char *stop_text)
 {
-    struct Gui *g = (struct Gui *)ud;
     struct IntuiMessage *imsg;
-    if (cls != 0xFF && g->have_map) {
-        FsMap_SetRange(&g->map, blk, n, cls);
-        draw_blocks(g, blk, n);
-    }
     while ((imsg = GT_GetIMsg(g->win->UserPort)) != NULL) {
         ULONG iclass = imsg->Class;
         struct Gadget *gad = (struct Gadget *)imsg->IAddress;
@@ -391,12 +390,58 @@ static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
         if (iclass == IDCMP_CLOSEWINDOW) g->quit = TRUE;
         else if (iclass == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(g->win); redraw_all(g); GT_EndRefresh(g->win, TRUE); }
         else if (iclass == IDCMP_GADGETUP && gad->GadgetID == GID_STOP && !g->stop) {
-            /* the engine stops between files: the one in flight is committed first */
             g->stop = TRUE;
-            set_status(g, "Stopping after the current file...");
+            set_status(g, stop_text);
         }
     }
     return !g->quit && !g->stop;
+}
+
+/* FFS engine callback: a block range changed class (cls 0xFF = idle poll). */
+static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+{
+    struct Gui *g = (struct Gui *)ud;
+    if (cls != 0xFF && g->have_map) {
+        FsMap_SetRange(&g->map, blk, n, cls);
+        draw_blocks(g, blk, n);
+    }
+    return drain_run_msgs(g, "Stopping after the current file...");
+}
+
+/* Seconds since 1978 from a DateStamp, for elapsed-time display. */
+static ULONG now_seconds(void)
+{
+    struct DateStamp ds;
+    DateStamp(&ds);
+    return (ULONG)ds.ds_Days * 86400UL + (ULONG)ds.ds_Minute * 60UL + (ULONG)ds.ds_Tick / 50UL;
+}
+
+/* SFS engine callback: the handler moved n blocks src -> dst (n == 0 is
+ * the between-steps poll).  Whether the destination is now contiguous
+ * is not known here; the re-analysis after the run colours it right. */
+struct SfsRunUi { struct Gui *g; ULONG t0, last_secs, moved; };
+
+static BOOL sfs_move(void *ud, ULONG src, ULONG dst, ULONG n)
+{
+    struct SfsRunUi *u = (struct SfsRunUi *)ud;
+    struct Gui *g = u->g;
+    ULONG secs;
+    if (n && g->have_map) {
+        FsMap_SetRange(&g->map, src, n, BLK_FREE); draw_blocks(g, src, n);
+        FsMap_SetRange(&g->map, dst, n, BLK_DATA); draw_blocks(g, dst, n);
+        u->moved += n;
+    }
+    secs = now_seconds() - u->t0;
+    if (secs != u->last_secs) {
+        char s[160], mv[24];
+        u->last_secs = secs;
+        Volume_SizeString(u->moved, g->map.blocksize, mv, sizeof(mv));
+        AD_SNPRINTF(s, "%s: handler defragmenting, %s moved, %lu min %lu s%s", g->map.volname, mv,
+                    (unsigned long)(secs / 60), (unsigned long)(secs % 60),
+                    g->stop ? " - stopping after this step" : "");
+        set_status(g, s);
+    }
+    return drain_run_msgs(g, "Stopping after the current step...");
 }
 
 static LONG ask(struct Gui *g, const char *title, const char *body, const char *gadgets)
@@ -419,7 +464,7 @@ static void show_about(struct Gui *g)
         "Disk defragmenter for AmigaOS with the classic block map.\n\n"
         "Files are moved one at a time with a journaled, single-write\n"
         "commit per file, so the volume stays valid at every moment.\n"
-        "FFS/OFS defragmentation; PFS3 and SFS maps.\n\n"
+        "FFS/OFS and SFS defragmentation; PFS3 map only.\n\n"
         "A native GadTools application, no dependencies beyond the ROM.\n\n"
         "Director: John Hertell\n"
         "Code: Claude Code (Anthropic)\n\n"
@@ -438,12 +483,77 @@ static void show_about(struct Gui *g)
     }
 }
 
-/* Seconds since 1978 from a DateStamp, for elapsed-time display. */
-static ULONG now_seconds(void)
+static void analyze(struct Gui *g);
+
+/* SFS: drive the handler's own defragmenter, follow it on the map, then
+ * analyze again for the real after-numbers. */
+static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
 {
-    struct DateStamp ds;
-    DateStamp(&ds);
-    return (ULONG)ds.ds_Days * 86400UL + (ULONG)ds.ds_Minute * 60UL + (ULONG)ds.ds_Tick / 50UL;
+    struct SfsDefragStats st;
+    struct SfsRunUi u;
+    char err[160], body[900], volname[32], moved[24];
+    ULONG frag0 = g->map.frag_files, runs0 = g->map.extra_runs, files0 = g->map.files, secs;
+    LONG rc;
+
+    if (!SfsDefrag_Available(v)) { set_status(g, "SFS is defragmented through its handler: the volume must be mounted."); return; }
+    strncpy(volname, g->map.volname, sizeof(volname) - 1); volname[sizeof(volname) - 1] = '\0';
+    AD_SNPRINTF(body,
+        "EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\n"
+        "AmiDefrag will drive the defragmenter built into the\n"
+        "SmartFilesystem handler of %s (%s:). The handler moves the\n"
+        "blocks itself, one transaction-safe step at a time, and the\n"
+        "volume stays mounted and usable meanwhile. It also packs files\n"
+        "together to consolidate free space, so it moves more than the\n"
+        "fragmented files and can take a long time; Stop ends the run\n"
+        "after the current step.\n\n"
+        "%lu files, %lu fragmented, %lu extra pieces.\n\n"
+        "Keep a FULL BACKUP anyway. The author accepts NO responsibility\n"
+        "for any loss of data caused by this software.",
+        volname, v->dosname, (unsigned long)files0, (unsigned long)frag0, (unsigned long)runs0);
+    if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
+        set_status(g, "Cancelled.");
+        return;
+    }
+
+    set_defrag_enabled(g, FALSE);
+    g->scanning = TRUE;
+    set_stop_enabled(g, TRUE);
+    u.g = g; u.t0 = now_seconds(); u.last_secs = 0xFFFFFFFFUL; u.moved = 0;
+    rc = SfsDefrag_Run(v, g->map.nblocks, g->map.blocksize, defrag_log, sfs_move, &u, &st, err, sizeof(err));
+    secs = now_seconds() - u.t0;
+    g->scanning = FALSE;
+    set_stop_enabled(g, FALSE);
+    if (g->quit) return;
+
+    if (rc == RETURN_ERROR || rc == RETURN_FAIL) {
+        set_status(g, err);
+        ask(g, "AmiDefrag", err, "OK");
+        set_defrag_enabled(g, TRUE);
+        return;
+    }
+
+    /* fresh analysis: colours and counts the handler's result properly */
+    Volume_SizeString(st.moved_blocks, g->map.blocksize, moved, sizeof(moved));
+    g->selected = g->map_vol;
+    {
+        struct TagItem t[] = { { GTLV_Selected, (ULONG)g->selected }, { TAG_DONE, 0 } };
+        GT_SetGadgetAttrsA(g->lv_gad, g->win, NULL, t);
+    }
+    analyze(g);
+    if (!g->have_map) return;
+    AD_SNPRINTF(body,
+        "Defragmentation of %s %s.\n\n"
+        "Moved by the handler: %s (%lu blocks) in %lu steps\n"
+        "Time: %lu min %lu s\n\n"
+        "Fragmented files: %lu -> %lu\n"
+        "Extra pieces: %lu -> %lu%s",
+        volname, st.aborted ? "stopped at your request" : "finished",
+        moved, (unsigned long)st.moved_blocks, (unsigned long)st.steps,
+        (unsigned long)(secs / 60), (unsigned long)(secs % 60),
+        (unsigned long)frag0, (unsigned long)g->map.frag_files,
+        (unsigned long)runs0, (unsigned long)g->map.extra_runs,
+        st.aborted ? "\nThe volume is consistent; run again to continue." : "");
+    ask(g, "AmiDefrag", body, "OK");
 }
 
 static void defragment(struct Gui *g)
@@ -457,7 +567,8 @@ static void defragment(struct Gui *g)
 
     if (!g->have_map || g->map_vol < 0 || g->map_vol >= (WORD)g->vols->count) return;
     v = &g->vols->v[g->map_vol];
-    if (v->fskind != FS_FFS) { set_status(g, "Only OFS/FFS volumes can be defragmented in this version."); return; }
+    if (v->fskind == FS_SFS) { defragment_sfs(g, v); return; }
+    if (v->fskind != FS_FFS) { set_status(g, "Only OFS/FFS and SFS volumes can be defragmented in this version."); return; }
     if (v->is_boot) { set_status(g, "The boot volume is not defragmented in this version."); return; }
 
     bd = BlockDev_Open(v->devname, v->unit);

@@ -3,11 +3,12 @@
 A disk defragmenter for AmigaOS with the classic Windows-defrag block map,
 built so that the disk is **never left in a dangerous state**.
 
-> Status: **v0.2, FFS engine in testing.** AmiDefrag analyses FFS, PFS3 and
-> SFS volumes and draws their block map, and can defragment **OFS/FFS**
-> volumes (`DOS\0`-`DOS\7`) with the per-file commit design below. PFS3 and
-> SFS are map-only so far. Tested on images and under emulation; treat the
-> engine as beta on real disks and keep backups.
+> Status: **v0.3, FFS and SFS engines in testing.** AmiDefrag analyses FFS,
+> PFS3 and SFS volumes and draws their block map, defragments **OFS/FFS**
+> volumes (`DOS\0`-`DOS\7`) with the per-file commit design below, and
+> defragments **SFS** volumes by driving the SmartFilesystem handler's own
+> step-by-step defragmenter. PFS3 is map-only so far. Tested on images and
+> under emulation; treat the engines as beta on real disks and keep backups.
 
 ## Download
 
@@ -44,6 +45,9 @@ valid at every instant. AmiDefrag follows that model.
 * Defragments OFS/FFS volumes (see below). Nothing but the FFS engine can
   write: the block device layer refuses writes until the engine arms them
   after the volume is inhibited and its root block re-checked.
+* Defragments SFS volumes through the handler (see below); AmiDefrag
+  itself writes nothing there, it only sends packets and follows the
+  reported moves on the map.
 
 Supported: OFS/FFS `DOS\0`-`DOS\7` (512 and 1024-byte blocks, dircache
 volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
@@ -72,12 +76,23 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   validator + rerun, with every file's md5 checked and the bitmap
   cross-checked; and by a byte-identical differential run of the m68k
   binary under vamos against the Linux build.
-* **SFS** — the SmartFilesystem handler contains its own transaction-safe
-  defragmenter, driven in single steps through the `ACTION_SFS_DEFRAGMENT_
-  INIT` / `ACTION_SFS_DEFRAGMENT_STEP` packets (fs/packets.h in the SFS
-  sources). Each step is one atomic move committed through the handler's
-  log; the packet reports what moved so the map can follow live. Moving
-  SFS blocks from outside the handler would be *less* safe, not more.
+* **SFS** (implemented, `src/sfs_defrag.c`) — the SmartFilesystem handler
+  contains its own transaction-safe defragmenter, driven in single steps
+  through the `ACTION_SFS_DEFRAGMENT_INIT` / `ACTION_SFS_DEFRAGMENT_STEP`
+  packets (fs/packets.h in the SFS sources, handler 1.83 or newer). Each
+  step is one transaction of the handler, so the volume is consistent at
+  every moment and stays mounted and usable during the run; the step
+  reply lists what moved and the map follows live, then a fresh analysis
+  gives the final picture. The handler also packs files together to
+  consolidate free space, so it moves more than the fragmented files and
+  gives no percentage. Moving SFS blocks from outside the handler would
+  be *less* safe, not more: the metadata lives in B-trees with no single
+  commit write, and the handler's log format is not published. Because
+  the engine talks to a running handler, SFS stays map-only on image
+  files (Linux build, `IMAGE=`). Verified with `test/sfs_handler_defrag.py`,
+  which drives the real handler under amifuse on an image, replays every
+  reported move on the bitmap and checks it against the handler's bitmap
+  and every file's md5 afterwards.
 * **PFS3** — all metadata lives in a reserved area with its own
   copy-on-write commit scheme. The safe route is a move-extent packet in
   the handler itself (pfs3aio is open source); until then the only
@@ -91,6 +106,7 @@ make linux           # native Linux CLI host/amidefrag (image mode, plain gcc)
 make testdisk        # test/test.hdf: FFS + PFS3 + SFS partitions with files
 python3 test/ffsfuzz.py 10   # FFS engine fuzz loop with crash replay (needs xdftool)
 test/make_bigfrag.py --fs ffs   # 1 GB torture image (also pfs3 / sfs), see below
+test/sfs_handler_defrag.py IMG --partition FRG2   # SFS engine check through amifuse (see file)
 ```
 
 Toolchain selection, paths and the Bebbo alternative are the same as in
@@ -114,9 +130,12 @@ AmiDefrag DH0: MAP WIDTH=72         ... with an ASCII block map
 AmiDefrag LIST                      list mounted partitions
 AmiDefrag IMAGE=disk.hdf LIST       partitions of an image (Linux: IMAGE=/path)
 AmiDefrag IMAGE=disk.hdf PART=DH1 MAP DEBUG
-AmiDefrag DH1: DRYRUN               what DEFRAG would move, nothing written
+AmiDefrag DH1: DRYRUN               what DEFRAG would move, nothing written (FFS)
 AmiDefrag DH1: DEFRAG               defragment (asks for YES unless FORCE)
 ```
+
+On an SFS volume DEFRAG drives the handler's defragmenter, so there is no
+DRYRUN preview there and the volume must be mounted.
 
 On an image file (Linux, or `IMAGE=` on the Amiga) there is no handler to
 create the journal, so a 2 KB file named `AmiDefrag.journal` must exist in
@@ -162,10 +181,12 @@ deleted on the Amiga; `--cleanup-only` handles FFS and SFS.
 ```
 src/        shared core: blockdev (read-only I/O), volume (DosList / RDB),
             fsmap (map model), ffs_map / pfs_map / sfs_map (parsers),
+            ffs_core + ffs_defrag (FFS engine), sfs_defrag (SFS via handler),
             cli (ReadArgs mode), gui (GadTools window), main
 host/       Linux build: amiga_compat.h, amiga_shim.c, host_rdargs.c, host_main.c
 support/    Bartman runtime support, icon generator, LHA packer
-test/       make_testdisk.sh, make_bigfrag.py, ffsfuzz.py (images are generated, not committed)
+test/       make_testdisk.sh, make_bigfrag.py, ffsfuzz.py, sfs_handler_defrag.py
+            (images are generated, not committed)
 ```
 
 ## References

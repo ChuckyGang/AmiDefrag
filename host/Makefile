@@ -1,5 +1,5 @@
 # Host (Linux) AmiDefrag - image-file mode, read-only. Plain gcc, no deps.
-CORE = cli volume fsmap ffs_map pfs_map sfs_map ffs_core ffs_defrag blockdev clib build
+CORE = cli volume fsmap ffs_map pfs_map sfs_map ffs_core ffs_defrag sfs_defrag blockdev clib build
 SRCS = $(addprefix ../src/,$(addsuffix .c,$(CORE))) \
        amiga_shim.c host_rdargs.c host_platform.c host_main.c
 amidefrag: $(SRCS) amiga_compat.h
