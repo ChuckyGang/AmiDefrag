@@ -28,8 +28,10 @@ def list_files(img, part):
     files = []
     for line in r.stdout.decode("latin-1").splitlines():
         parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isascii():
-            files.append((int(parts[0]), int(parts[1]), parts[2]))
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            path = parts[2].split("  [anode ")[0]          # DEBUG appends "  [anode N first B]"
+            if path.isascii():
+                files.append((int(parts[0]), int(parts[1]), path))
     return files
 
 
@@ -77,9 +79,11 @@ def main():
     changed = [p for p in sample if md5_0.get(p) != md5_1.get(p)]
     log(f"md5 after: {len(changed)} changed: {changed[:10]}; handler write probe {'ok' if res['ok'] else 'FAILED'}")
     frag1, unk1, note1, out1 = pf.analyse(img)
-    log(f"after: fragmented {frag1} (skipped {skipped}), unknown {unk1} {note1}")
+    # the journal file itself may be fragmented; it is never moved
+    frag1_files = len([p for pieces, blocks, p in list_files(img, a.partition) if pieces > 1 and p != "AmiDefrag.journal"])
+    log(f"after: fragmented {frag1} ({frag1_files} without the journal, skipped {skipped}), unknown {unk1} {note1}")
     print(out1)
-    ok = rc in (0, 5) and not changed and res["ok"] and unk1 == 0 and frag1 == skipped and errors == 0
+    ok = rc in (0, 5) and not changed and res["ok"] and unk1 == 0 and frag1_files == skipped and errors == 0
     print("RESULT:", "OK" if ok else "FAILED")
     sys.exit(0 if ok else 1)
 
