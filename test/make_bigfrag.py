@@ -14,17 +14,20 @@ How the fragmentation is produced ("sieve" method):
      handler (FastFileSystem 3.2 / pfs3aio / SmartFilesystem).
   3. A single big "tail" filler (TAIL_FRACTION of the disk) is written so one
      large contiguous free run exists at the end.
-  4. The rest of the disk is filled to the brim with alternating small filler
-     files: A (future holes, 2..32 blocks) and B (future gaps, 1..8 blocks).
-  5. All A fillers are deleted -> free space is a sieve of small holes.
-  6. Real files (default: /mnt/share/Amiga/Demos, MODULES, then ~/UAE/WB323; directory
-     structure preserved, names cut to 30 chars) are copied in until the
-     disk is full or --fill is reached. Every file larger than a hole is
-     split across many holes by the handler's own allocator.
-  7. The B fillers and the tail filler are deleted -> the real files stay
-     shredded, with small free gaps between the pieces plus one big free
-     run at the end.
-  8. Unmount, then host/amidefrag reports the result.
+  4. The rest of the disk is filled to the brim with alternating files: a
+     filler A (2..32 blocks, a future hole) and a real small source file
+     (<= 32 KB, a "spacer" that stays).
+  5. All A fillers and the tail are deleted -> free space is a sieve of
+     1-16 KB holes plus one big run.
+  6. The larger real files (default sources: /mnt/share/Amiga/Demos, MODULES,
+     then ~/UAE/WB323; directory structure preserved, names cut to 30 chars)
+     are copied in until --fill or a 16 MB free-space margin is reached.
+     Every file larger than a hole is split across many holes by the
+     handler's own allocator.
+  Nothing is deleted after step 5: the handlers (through amifuse) stop
+  answering lookups late in a long session, and PFS3 cannot be cleaned up
+  offline at all. --cleanup-only removes leftovers of older runs (FFS/SFS).
+  Afterwards host/amidefrag reports the result.
 
 Needs: AmiPart host CLI (../AmiPart/host/amipart or AMIPART=), amifuse 0.6+
 on PATH, handler binaries (default ~/UAE/WB323/L/...). Linux only (FUSE).
@@ -39,6 +42,7 @@ CYL_BYTES = 16 * 63 * 512                 # 16 heads x 63 sectors
 BLOCK = 512
 TAIL_FRACTION = 0.12
 FILES_PER_DIR = 200
+SPACER_MAX = 32 * 1024                   # real files up to this size serve as spacers
 
 FS = {
     "ffs":  dict(dostype="DOS3", part="FRG0", vol="FragFFS",
@@ -222,7 +226,27 @@ def main():
     make_image(out, cyls, a.fs, a.amipart)
     mount(out, a.fs, mnt)
     try:
-        # 3. tail filler: one big contiguous file, freed at the end.
+        # Gather the real files once: small ones (<= SPACER_MAX) become the
+        # spacers of the sieve, the rest is copied into the holes afterwards.
+        def gather(src):
+            for root, dnames, fnames in os.walk(src):
+                dnames[:] = sorted(d for d in dnames if not os.path.islink(os.path.join(root, d)))
+                for fn in sorted(fnames):
+                    if fn.endswith(".uaem") or fn.startswith("."): continue
+                    sp = os.path.join(root, fn)
+                    try: size = os.path.getsize(sp)
+                    except OSError: continue
+                    if 0 < size <= part_bytes // 4:
+                        yield sp, size
+        small = []
+        for src in srcs:
+            small += [(sp, sz) for sp, sz in gather(src) if sz <= SPACER_MAX]
+        rng.shuffle(small)
+        if not small: sys.exit("no small source files for spacers")
+        log(f"{len(small)} small source files (<= {SPACER_MAX // 1024} KB) available as spacers")
+
+        # 3. tail filler: one big contiguous file, deleted before the real
+        # files go in, so one large free run survives at the end of the disk.
         tail = os.path.join(mnt, "zz_tail")
         tail_bytes = int(part_bytes * TAIL_FRACTION)
         try:
@@ -234,36 +258,42 @@ def main():
             sys.exit(f"tail filler failed: {e}")
         log(f"tail filler {tail_bytes // (1024*1024)} MB written")
 
-        # 4. sieve: alternate A (holes) and B (gaps) until the disk is full.
-        holes, gaps, dirs = [], [], 0
-        a_bytes = b_bytes = 0
+        # 4. sieve: alternate a filler A (future hole, 2..32 blocks) with a
+        # real small file (spacer, stays) until the disk is full. The spacers
+        # are legitimate content, so nothing has to be deleted afterwards:
+        # that matters because the handlers (through amifuse) stop answering
+        # deletes and lookups late in a long session, and PFS3 cannot be
+        # cleaned up offline at all (amifuse never gets Examine answered on
+        # 1 GB PFS3 volumes).
+        holes, dirs, nsp = [], 0, 0
+        a_bytes = s_bytes = 0
         try:
             while True:
-                d = os.path.join(mnt, f"sieve{dirs:04d}")
+                d = os.path.join(mnt, f"small{dirs:04d}")
                 os.mkdir(d); dirs += 1
+                taken = set()
                 for i in range(FILES_PER_DIR // 2):
                     na = rng.randint(2, 32) * BLOCK
-                    nb = rng.randint(1, 8) * BLOCK
                     pa = os.path.join(d, f"a{i:03d}"); write_file(pa, pad[:na]); holes.append(pa); a_bytes += na
-                    pb = os.path.join(d, f"b{i:03d}"); write_file(pb, pad[:nb]); gaps.append(pb); b_bytes += nb
+                    sp, sz = small[nsp % len(small)]
+                    nm = ami_name(os.path.basename(sp), taken)
+                    copy_file(sp, os.path.join(d, nm)); nsp += 1; s_bytes += sz
                 if dirs % 20 == 0:
-                    log(f"sieve: {len(holes)} pairs, {(a_bytes + b_bytes) // (1024*1024)} MB")
+                    log(f"sieve: {len(holes)} holes, {(a_bytes + s_bytes) // (1024*1024)} MB")
         except Full:
             pass
         log(f"sieve full: {len(holes)} hole files ({a_bytes // (1024*1024)} MB), "
-            f"{len(gaps)} gap files ({b_bytes // (1024*1024)} MB), {dirs} dirs")
+            f"{nsp} spacer files ({s_bytes // (1024*1024)} MB), {dirs} dirs")
 
-        # 5. open the holes
+        # 5. open the holes, free the tail
         hf = sum(0 if rm_retry(p) else 1 for p in holes)
-        log(f"holes opened ({hf} failures)")
+        if not rm_retry(tail): hf += 1
+        log(f"holes opened, tail removed ({hf} failures)")
 
-        # 6. real files: own recursive walk so truncated directory names
-        # are carried along to the destination path.
-        # Never let a real-file copy run into "disk full": the handlers
-        # (through amifuse) hang on the first operation after a partial big
-        # write, which left the fillers behind in all three first builds.
-        # Cap at 95% of the hole volume and keep a 16 MB margin of free space.
-        target = min(int(part_bytes * a.fill), int(a_bytes * 0.95))
+        # 6. the larger real files, directory structure kept. Never run into
+        # "disk full": amifuse hangs on the first operation after a partial
+        # big write. Cap at 95% of the hole volume + tail, 16 MB margin.
+        target = min(int(part_bytes * a.fill), int((a_bytes + tail_bytes) * 0.95))
         MARGIN = 16 * 1024 * 1024
         st = dict(copied=0, nfiles=0, full=False)
 
@@ -285,7 +315,7 @@ def main():
                 if fn.endswith(".uaem") or fn.startswith("."): continue
                 sp = os.path.join(src_dir, fn)
                 size = os.path.getsize(sp)
-                if size == 0 or size > part_bytes // 4: continue
+                if size <= SPACER_MAX or size > part_bytes // 4: continue
                 fb = free_bytes()
                 if fb is not None and size + MARGIN > fb:
                     st["full"] = True; return
@@ -294,7 +324,7 @@ def main():
                 except Full:
                     st["full"] = True; return
                 st["copied"] += size; st["nfiles"] += 1
-                if st["nfiles"] % 1000 == 0:
+                if st["nfiles"] % 500 == 0:
                     log(f"real files: {st['nfiles']}, {st['copied'] // (1024*1024)} MB")
             for dn in subs:
                 if st["full"] or st["copied"] >= target: return
@@ -312,12 +342,6 @@ def main():
             copy_tree(src, top)
         copied, nfiles, full = st["copied"], st["nfiles"], st["full"]
         log(f"real files done: {nfiles} files, {copied // (1024*1024)} MB" + (" (stopped at free-space margin)" if full else ""))
-
-        # 7. remove tail and gaps. Tail first: SFS parks deleted files in
-        # .recycled (FIFO, a few hundred entries) and the many gap deletions
-        # that follow push the big tail file out of it again.
-        failed = cleanup_known(mnt, gaps, dirs)
-        log(f"tail and gap fillers removed ({failed} failures)")
     finally:
         if not a.keep_mounted:
             unmount(mnt)
