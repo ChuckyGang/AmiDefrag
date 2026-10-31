@@ -421,6 +421,13 @@ static ULONG now_seconds(void)
  * is not known here; the re-analysis after the run colours it right. */
 struct SfsRunUi { struct Gui *g; ULONG t0, last_secs, moved; };
 
+/* The engine hands the same user pointer to the log and move callbacks,
+ * and in the SFS run that pointer is the SfsRunUi, not the Gui. */
+static void sfs_log(void *ud, const char *line)
+{
+    set_status(((struct SfsRunUi *)ud)->g, line);
+}
+
 static BOOL sfs_move(void *ud, ULONG src, ULONG dst, ULONG n)
 {
     struct SfsRunUi *u = (struct SfsRunUi *)ud;
@@ -523,7 +530,7 @@ static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
     g->scanning = TRUE;
     set_stop_enabled(g, TRUE);
     u.g = g; u.t0 = now_seconds(); u.last_secs = 0xFFFFFFFFUL; u.moved = 0;
-    rc = SfsDefrag_Run(v, g->map.nblocks, g->map.blocksize, defrag_log, sfs_move, &u, &st, err, sizeof(err));
+    rc = SfsDefrag_Run(v, g->map.nblocks, g->map.blocksize, sfs_log, sfs_move, &u, &st, err, sizeof(err));
     secs = now_seconds() - u.t0;
     g->scanning = FALSE;
     set_stop_enabled(g, FALSE);
