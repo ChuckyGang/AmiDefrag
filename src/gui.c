@@ -355,8 +355,11 @@ static void analyze(struct Gui *g)
         g->map_vol  = g->selected;
         draw_map(g);
         summarize(g);
-        set_defrag_enabled(g, g->map.frag_files > 0 &&
-                              ((v->fskind == FS_FFS && !v->is_boot) || SfsDefrag_Available(v)));
+        /* FFS: only when there is a fragmented file to move.  SFS: the
+         * handler's defragmenter also packs files together, so it has
+         * work even when no file is fragmented. */
+        set_defrag_enabled(g, (v->fskind == FS_FFS && !v->is_boot && g->map.frag_files > 0) ||
+                              SfsDefrag_Available(v));
     } else {
         char s[160];
         AD_SNPRINTF(s, "%s: %s", v->dosname, g->map.note);
