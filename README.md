@@ -134,18 +134,25 @@ with the real pfs3aio / SmartFilesystem handlers.
 image with one partition (`FRG0`/`FRG1`/`FRG2`, handler embedded in the
 RDB) whose files are shredded on purpose. It mounts the partition
 read-write through amifuse with the *real* handler (FastFileSystem 3.2,
-pfs3aio, SmartFilesystem from `~/UAE/WB323/L`), fills the disk with
-alternating tiny filler files, deletes every other one so the free space
-becomes a sieve of 1-16 KB holes, copies real files into the holes
-(`/mnt/share/Amiga/Demos`, `MODULES` and then `~/UAE/WB323` by default, `--src` to
-change), then deletes the remaining fillers. Result: every file larger
-than a hole is in many pieces, free space is riddled with small gaps,
-and one large free run is left at the end. The emulated handlers manage
-roughly 2 MB/s and 30-80 small files a second, so a 1 GB image takes from
-about an hour (FFS) to several hours (PFS3, SFS); run the three in
-parallel. The images are plain RDB hardfiles for Amiberry (attach as
-IDE, not uaehf, so the embedded PFS3/SFS handler loads) or for `dd` onto
-a scratch card.
+pfs3aio, SmartFilesystem from `~/UAE/WB323/L`), writes one big filler,
+then fills the disk with alternating small fillers and real small files
+(up to 32 KB), deletes the fillers so the free space becomes a sieve of
+1-16 KB holes plus one large run, and copies the larger real files into
+the holes (`/mnt/share/Amiga/Demos`, `MODULES` and then `~/UAE/WB323` by
+default, `--src` to change). The handler's own allocator does the
+fragmenting, so the layout is what a real Amiga would produce; nothing
+has to be deleted afterwards. The emulated handlers manage roughly 2 MB/s
+and 30-80 small files a second, so a 1 GB image takes 30-90 minutes.
+The images are plain RDB hardfiles for Amiberry (attach as IDE, not
+uaehf, so the embedded PFS3/SFS handler loads) or for `dd` onto a
+scratch card.
+
+amifuse notes: the mount runs through `test/amifuse_patched.py`, which
+raises amifuse's per-packet reply budget (pfs3aio is still committing
+after tens of thousands of deletes when the next packet arrives, and
+stock amifuse reports EIO). amifuse cannot list directories on a PFS3
+volume from a cold start, so leftovers of an interrupted PFS3 run must be
+deleted on the Amiga; `--cleanup-only` handles FFS and SFS.
 
 ## Layout
 
