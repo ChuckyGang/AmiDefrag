@@ -279,17 +279,11 @@ def main():
 
         # 6. the larger real files, directory structure kept. Never run into
         # "disk full": amifuse hangs on the first operation after a partial
-        # big write. Cap at 95% of the hole volume + tail, 16 MB margin.
+        # big write. The free space is known exactly (hole bytes + tail, all
+        # block multiples), so cap at 95% of it; statvfs through amifuse is
+        # not trusted (PFS3 reported stale numbers and stopped a run early).
         target = min(int(part_bytes * a.fill), int((a_bytes + tail_bytes) * 0.95))
-        MARGIN = 16 * 1024 * 1024
         st = dict(copied=0, nfiles=0, full=False)
-
-        def free_bytes():
-            try:
-                v = os.statvfs(mnt)
-                return v.f_bavail * v.f_frsize
-            except OSError:
-                return None
 
         def copy_tree(src_dir, dst_dir):
             try: entries = sorted(os.listdir(src_dir))
@@ -303,9 +297,7 @@ def main():
                 sp = os.path.join(src_dir, fn)
                 size = os.path.getsize(sp)
                 if size <= SPACER_MAX or size > part_bytes // 4: continue
-                fb = free_bytes()
-                if fb is not None and size + MARGIN > fb:
-                    st["full"] = True; return
+                if st["copied"] + size > target: continue
                 try:
                     copy_file(sp, os.path.join(dst_dir, ami_name(fn, taken)))
                 except Full:
@@ -328,7 +320,7 @@ def main():
             os.mkdir(top)
             copy_tree(src, top)
         copied, nfiles, full = st["copied"], st["nfiles"], st["full"]
-        log(f"real files done: {nfiles} files, {copied // (1024*1024)} MB" + (" (stopped at free-space margin)" if full else ""))
+        log(f"real files done: {nfiles} files, {copied // (1024*1024)} MB" + (" (disk full)" if full else ""))
     finally:
         if not a.keep_mounted:
             unmount(mnt)
