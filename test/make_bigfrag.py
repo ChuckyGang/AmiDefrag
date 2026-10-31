@@ -80,13 +80,34 @@ def make_image(out, cyls, fs, amipart):
     r = sh(f'"{amipart}" SCRIPT "{script}" FORCE')
     log("AmiPart: " + " | ".join(l for l in r.stdout.splitlines() if l.strip())[-300:])
 
+MOUNT_PROC = None
+
+def amifuse_python():
+    """amifuse's own interpreter (first line of the launcher script)."""
+    launcher = shutil.which("amifuse")
+    with open(launcher) as fh:
+        first = fh.readline().strip()
+    return first[2:] if first.startswith("#!") else sys.executable
+
 def mount(out, fs, mnt):
+    """Mount through amifuse, run via test/amifuse_patched.py as a child of
+    this process: that wrapper raises amifuse's per-packet reply budget,
+    which pfs3aio exceeds after mass deletes (it is still committing when
+    the next packet arrives and amifuse would report EIO). With
+    AMIFUSE_DEBUG=<logfile> the daemon's --debug output goes to that file."""
+    global MOUNT_PROC
     f = FS[fs]
     os.makedirs(mnt, exist_ok=True)
-    sh(f'amifuse mount "{out}" --partition {f["part"]} --driver "{f["handler"]}" '
-       f'--mountpoint "{mnt}" --write')
-    for _ in range(60):
+    cmd = [amifuse_python(), os.path.join(HERE, "amifuse_patched.py"), "mount", out,
+           "--partition", f["part"], "--driver", f["handler"],
+           "--mountpoint", mnt, "--write", "--interactive"]
+    dbg = os.environ.get("AMIFUSE_DEBUG")
+    if dbg: cmd.append("--debug")
+    MOUNT_PROC = subprocess.Popen(cmd, stdout=open(dbg, "w") if dbg else subprocess.DEVNULL,
+                                  stderr=subprocess.STDOUT)
+    for _ in range(120):
         if os.path.ismount(mnt): return
+        if MOUNT_PROC.poll() is not None: sys.exit("amifuse mount exited early")
         time.sleep(0.5)
     sys.exit("amifuse mount did not appear")
 
@@ -94,7 +115,9 @@ def unmount(mnt):
     for _ in range(10):
         r = sh(f'amifuse unmount "{mnt}"', check=False)
         time.sleep(1)
-        if not os.path.ismount(mnt): return
+        if not os.path.ismount(mnt):
+            if MOUNT_PROC: MOUNT_PROC.wait(timeout=120)
+            return
     log("WARNING: could not unmount " + mnt)
 
 class Full(Exception): pass
@@ -284,6 +307,7 @@ def main():
         # not trusted (PFS3 reported stale numbers and stopped a run early).
         target = min(int(part_bytes * a.fill), int((a_bytes + tail_bytes) * 0.95))
         st = dict(copied=0, nfiles=0, full=False)
+        def done(): return st["full"] or target - st["copied"] < 1024 * 1024
 
         def copy_tree(src_dir, dst_dir):
             try: entries = sorted(os.listdir(src_dir))
@@ -292,7 +316,7 @@ def main():
             files = [e for e in entries if os.path.isfile(os.path.join(src_dir, e))]
             subs  = [e for e in entries if os.path.isdir(os.path.join(src_dir, e)) and not os.path.islink(os.path.join(src_dir, e))]
             for fn in files:
-                if st["full"] or st["copied"] >= target: return
+                if done(): return
                 if fn.endswith(".uaem") or fn.startswith("."): continue
                 sp = os.path.join(src_dir, fn)
                 size = os.path.getsize(sp)
@@ -306,7 +330,7 @@ def main():
                 if st["nfiles"] % 500 == 0:
                     log(f"real files: {st['nfiles']}, {st['copied'] // (1024*1024)} MB")
             for dn in subs:
-                if st["full"] or st["copied"] >= target: return
+                if done(): return
                 nd = os.path.join(dst_dir, ami_name(dn, taken))
                 try: os.mkdir(nd)
                 except OSError as e:
@@ -315,7 +339,7 @@ def main():
                 copy_tree(os.path.join(src_dir, dn), nd)
 
         for src in srcs:
-            if st["full"] or st["copied"] >= target: break
+            if done(): break
             top = os.path.join(mnt, ami_name(os.path.basename(src.rstrip("/")), set()))
             os.mkdir(top)
             copy_tree(src, top)
