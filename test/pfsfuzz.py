@@ -251,10 +251,20 @@ def run_defrag(img, env=None, trace=False):
     if trace: e["AMIDEFRAG_TRACE_WRITES"] = "1"
     r = sh(f'"{HOST}" IMAGE="{img}" PART={PART} DEFRAG FORCE', env=e, check=False)
     singles = []
+    pairs = []          # first write of two consecutive single-sector writes to adjacent
+                        # sectors: an anode straddling a sector boundary (two-sector commit)
     if trace:
+        prev = None
         for line in r.stderr.splitlines():
             if line.startswith("[shim] w#") and line.endswith(" +1"):
-                singles.append(int(line.split("#")[1].split()[0]))
+                n = int(line.split("#")[1].split()[0])
+                addr = int(line.split("@")[1].split()[0])
+                singles.append(n)
+                if prev and prev[0] == n - 1 and abs(prev[1] - addr) == 1:
+                    pairs.append(prev[0])
+                prev = (n, addr)
+            else:
+                prev = None
     writes = skipped = moved = errors = 0
     for line in r.stdout.splitlines():
         if line.startswith("Device I/O:"):
@@ -263,7 +273,7 @@ def run_defrag(img, env=None, trace=False):
             moved = int(line.split("fragmented,")[1].split()[0])
             skipped = int(line.split("blocks),")[1].split()[0])
             errors = int(line.split("skipped for space,")[1].split()[0])
-    return r.returncode, writes, moved, skipped, errors, r.stdout + (r.stderr if not trace else ""), singles
+    return r.returncode, writes, moved, skipped, errors, r.stdout + (r.stderr if not trace else ""), (singles, pairs)
 
 
 # ----------------------------------------------------------------- loop ---
@@ -288,8 +298,8 @@ def iteration(it, seed):
     ok = True
 
     # --- 1. clean run ---
-    rc, writes, moved, skipped, errors, out, singles = run_defrag(img, trace=True)
-    log.append(f"clean run: rc {rc}, {writes} writes ({len(singles)} metadata), moved {moved}, skipped {skipped}, errors {errors}")
+    rc, writes, moved, skipped, errors, out, (singles, pairs) = run_defrag(img, trace=True)
+    log.append(f"clean run: rc {rc}, {writes} writes ({len(singles)} metadata, {len(pairs)} two-sector anodes), moved {moved}, skipped {skipped}, errors {errors}")
     ok &= expect(rc in (0, 5), f"defrag rc {rc}\n{out[-1500:]}", log)
     ok &= expect(errors == 0, f"{errors} files skipped with errors\n{out[-1500:]}", log)
     bad, hok = check_files(img, files)
@@ -303,8 +313,11 @@ def iteration(it, seed):
 
     # --- 2. crash replays ---
     for k in range(6):
-        # mostly right at a metadata write (crash before or in it), sometimes anywhere
-        if singles and rng.random() < 0.8:
+        # between the two sectors of a straddling anode when there is one,
+        # mostly right at a metadata write otherwise, sometimes anywhere
+        if pairs and k < 2:
+            n = rng.choice(pairs) + 1
+        elif singles and rng.random() < 0.8:
             n = rng.choice(singles) + rng.choice([0, 0, 1])
             n = min(n, writes - 1)
         else:
