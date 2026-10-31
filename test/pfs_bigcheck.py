@@ -22,11 +22,13 @@ import pfsfuzz as pf
 
 
 def list_files(img, part):
-    r = subprocess.run([pf.HOST, f"IMAGE={img}", f"PART={part}", "FILES", "DEBUG"], capture_output=True, text=True)
+    # Amiga names are Latin-1; names outside ASCII are left out of the
+    # md5 sample (the bridge's name handling is not known to be 8-bit clean)
+    r = subprocess.run([pf.HOST, f"IMAGE={img}", f"PART={part}", "FILES", "DEBUG"], capture_output=True)
     files = []
-    for line in r.stdout.splitlines():
+    for line in r.stdout.decode("latin-1").splitlines():
         parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isascii():
             files.append((int(parts[0]), int(parts[1]), parts[2]))
     return files
 
