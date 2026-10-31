@@ -35,6 +35,7 @@
 #include "volume.h"
 #include "fsmap.h"
 #include "ffs_defrag.h"
+#include "pfs_defrag.h"
 #include "sfs_defrag.h"
 #include "gui.h"
 #include "version.h"
@@ -358,7 +359,7 @@ static void analyze(struct Gui *g)
         /* FFS: only when there is a fragmented file to move.  SFS: the
          * handler's defragmenter also packs files together, so it has
          * work even when no file is fragmented. */
-        set_defrag_enabled(g, (v->fskind == FS_FFS && !v->is_boot && g->map.frag_files > 0) ||
+        set_defrag_enabled(g, ((v->fskind == FS_FFS || v->fskind == FS_PFS) && !v->is_boot && g->map.frag_files > 0) ||
                               SfsDefrag_Available(v));
     } else {
         char s[160];
@@ -474,7 +475,7 @@ static void show_about(struct Gui *g)
         "Disk defragmenter for AmigaOS with the classic block map.\n\n"
         "Files are moved one at a time with a journaled, single-write\n"
         "commit per file, so the volume stays valid at every moment.\n"
-        "FFS/OFS and SFS defragmentation; PFS3 map only.\n\n"
+        "OFS/FFS, PFS3 and SFS defragmentation.\n\n"
         "A native GadTools application, no dependencies beyond the ROM.\n\n"
         "Director: John Hertell\n"
         "Code: Claude Code (Anthropic)\n\n"
@@ -582,7 +583,7 @@ static void defragment(struct Gui *g)
     if (!g->have_map || g->map_vol < 0 || g->map_vol >= (WORD)g->vols->count) return;
     v = &g->vols->v[g->map_vol];
     if (v->fskind == FS_SFS) { defragment_sfs(g, v); return; }
-    if (v->fskind != FS_FFS) { set_status(g, "Only OFS/FFS and SFS volumes can be defragmented in this version."); return; }
+    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { set_status(g, "Only OFS/FFS, PFS3 and SFS volumes can be defragmented in this version."); return; }
     if (v->is_boot) { set_status(g, "The boot volume is not defragmented in this version."); return; }
 
     bd = BlockDev_Open(v->devname, v->unit);
@@ -592,7 +593,8 @@ static void defragment(struct Gui *g)
     memset(&o, 0, sizeof(o));
     o.dry_run = TRUE;
     set_defrag_enabled(g, FALSE);
-    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, NULL, g, &st, err, sizeof(err));
+    rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
+             (bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, NULL, g, &st, err, sizeof(err));
     if (rc == RETURN_ERROR || st.candidates == 0) {
         AD_SNPRINTF(body, "%s", err[0] ? err : "Nothing to defragment.");
         set_status(g, body);
@@ -626,7 +628,8 @@ static void defragment(struct Gui *g)
     set_stop_enabled(g, TRUE);
     {
         ULONG t0 = now_seconds(), secs;
-        rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
+        rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
+                 (bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
         secs = now_seconds() - t0;
         g->scanning = FALSE;
         set_stop_enabled(g, FALSE);
@@ -653,11 +656,13 @@ static void defragment(struct Gui *g)
     AD_SNPRINTF(body, "%s: %lu of %lu file(s) made contiguous (%lu blocks), %lu skipped for space%s%s%s",
         g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
         (unsigned long)st.moved_blocks, (unsigned long)st.skipped_space,
-        st.needs_validation ? " - VOLUME NEEDS VALIDATION" : "",
+        st.needs_validation ? (v->fskind == FS_PFS ? " - RUN AGAIN TO FINISH" : " - VOLUME NEEDS VALIDATION") : "",
         err[0] ? " - " : "", err);
     set_status(g, body);
     if (rc == RETURN_FAIL || st.needs_validation)
-        ask(g, "AmiDefrag", "The run stopped after writes began.\nThe bitmap was left marked invalid on purpose:\nthe filesystem will validate the volume on the next mount.\nRun AmiDefrag again afterwards to finish.", "OK");
+        ask(g, "AmiDefrag", v->fskind == FS_PFS
+            ? "The run stopped after writes began.\nThe volume is readable, but one file's move is only\nrecorded in the journal: run AmiDefrag again on this\nvolume to let it finish or undo that move."
+            : "The run stopped after writes began.\nThe bitmap was left marked invalid on purpose:\nthe filesystem will validate the volume on the next mount.\nRun AmiDefrag again afterwards to finish.", "OK");
     set_defrag_enabled(g, !st.needs_validation && (st.candidates - st.moved) > 0);
 }
 

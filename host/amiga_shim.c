@@ -55,6 +55,7 @@ LONG HostFilePRead(BPTR fh, void *buf, ULONG len, UQUAD off)
 static long  g_crash_after = -1;
 static int   g_crash_torn  = 0;
 static long  g_write_count = 0;
+static int   g_trace_writes = 0;   /* AMIDEFRAG_TRACE_WRITES=1: one stderr line per write */
 static void  crash_init(void)
 {
     static int done = 0;
@@ -67,6 +68,8 @@ static void  crash_init(void)
         g_crash_after = strtol(e, &end, 10);
         g_crash_torn  = (*end == 't');
     }
+    e = getenv("AMIDEFRAG_TRACE_WRITES");
+    g_trace_writes = (e && *e && *e != '0');
 }
 LONG HostFilePWrite(BPTR fh, const void *buf, ULONG len, UQUAD off)
 {
@@ -77,6 +80,8 @@ LONG HostFilePWrite(BPTR fh, const void *buf, ULONG len, UQUAD off)
     /* Counted in 512-byte blocks so a multi-block write can "crash" in
      * the middle: the blocks before the crash point land, the rest never
      * do (torn: plus the first 256 bytes of the next one). */
+    if (g_trace_writes)
+        fprintf(stderr, "[shim] w#%ld @%llu +%lu\n", g_write_count, (unsigned long long)(off / 512), (unsigned long)(len / 512));
     if (g_crash_after >= 0) {
         long blocks = (long)(len / 512), before = g_write_count;
         if (before + blocks > g_crash_after) {
@@ -89,6 +94,8 @@ LONG HostFilePWrite(BPTR fh, const void *buf, ULONG len, UQUAD off)
             _exit(99);
         }
         g_write_count += blocks;
+    } else {
+        g_write_count += (long)(len / 512);
     }
     return (LONG)pwrite(fileno(f), buf, (size_t)len, (off_t)off);
 }

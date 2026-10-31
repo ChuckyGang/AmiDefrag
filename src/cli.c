@@ -14,6 +14,7 @@
 #include "fsmap.h"
 #include "cli.h"
 #include "ffs_defrag.h"
+#include "pfs_defrag.h"
 #include "sfs_defrag.h"
 
 extern BOOL AmiDefrag_Debug;
@@ -111,7 +112,7 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
     LONG rc;
 
     if (v->fskind == FS_SFS) return run_defrag_sfs(bd, v, dry, force);
-    if (v->fskind != FS_FFS) { out("DEFRAG: only OFS/FFS and SFS volumes in this version.\n"); return RETURN_ERROR; }
+    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { out("DEFRAG: only OFS/FFS, PFS3 and SFS volumes in this version.\n"); return RETURN_ERROR; }
     memset(&o, 0, sizeof(o));
     o.dry_run = dry;
     if (!dry && !force) {
@@ -123,14 +124,15 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
              "runs, so nothing else must write to it.\n", v->dosname, v->devname);
         if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
     }
-    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, dry ? NULL : cli_move, NULL, &st, err, sizeof(err));
+    rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
+             (bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, dry ? NULL : cli_move, NULL, &st, err, sizeof(err));
     if (err[0]) outf("%s\n", err);
     if (st.aborted) out("Stopped at your request (Ctrl-C) after the current file; the volume is consistent.\n");
     outf("%s: %lu fragmented, %lu %s (%lu blocks), %lu skipped for space, %lu skipped with errors%s\n",
          dry ? "Dry run" : "Done", (unsigned long)st.candidates, (unsigned long)st.moved,
          dry ? "would move" : "moved", (unsigned long)st.moved_blocks,
          (unsigned long)st.skipped_space, (unsigned long)st.skipped_error,
-         st.needs_validation ? " - VOLUME NEEDS VALIDATION" : "");
+         st.needs_validation ? (v->fskind == FS_PFS ? " - RUN AGAIN TO FINISH (journal)" : " - VOLUME NEEDS VALIDATION") : "");
     outf("Device I/O: %lu blocks read, %lu written\n", (unsigned long)bd->reads, (unsigned long)bd->writes);
     return rc;
 }
