@@ -83,10 +83,10 @@ static void account_file(struct PfsMapCtx *p, ULONG anodenr)
     }
 }
 
-static BOOL walk_cb(void *ud, ULONG anodenr, LONG type, const char *name)
+static BOOL walk_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULONG parent)
 {
     struct PfsMapCtx *p = (struct PfsMapCtx *)ud;
-    (void)name;
+    (void)name; (void)parent;
     if (type == PFS_ST_FILE || type == PFS_ST_ROLLOVER) account_file(p, anodenr);
     /* directories are walked by the core; links own no data blocks;
      * deleted files keep their blocks, which stay UNKN on the map */

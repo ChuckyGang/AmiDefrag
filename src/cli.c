@@ -16,12 +16,13 @@
 #include "ffs_defrag.h"
 #include "pfs_defrag.h"
 #include "sfs_defrag.h"
+#include "pfs_core.h"
 
 extern BOOL AmiDefrag_Debug;
 #include "version.h"
 
-#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
-enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_COUNT };
+#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,FILES/S,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
+enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_FILES, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_COUNT };
 
 static void out(const char *s) { PutStr((CONST_STRPTR)s); }
 
@@ -220,6 +221,87 @@ static void print_stats(const struct VolumeInfo *v, const struct FsMap *m)
     if (m->note[0]) outf("Note: %s\n", m->note);
 }
 
+/* FILES: the fragmented files by path (all files with DEBUG).  PFS3 only
+ * so far: the walker reports each directory before its contents, so a
+ * table anodenr -> path of the directories seen is enough. */
+struct FileList {
+    struct PfsVol *v;
+    ULONG  *dir_an; char **dir_path; ULONG ndirs, cap;
+    BOOL    all;
+    ULONG   listed;
+};
+
+static const char *dir_path_of(struct FileList *fl, ULONG an)
+{
+    ULONG i;
+    for (i = 0; i < fl->ndirs; i++) if (fl->dir_an[i] == an) return fl->dir_path[i];
+    return "?/";
+}
+
+static BOOL files_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULONG parent)
+{
+    struct FileList *fl = (struct FileList *)ud;
+    if (type == PFS_ST_USERDIR) {
+        const char *pp = dir_path_of(fl, parent);
+        ULONG len = strlen(pp) + strlen(name) + 2;
+        char *s;
+        if (fl->ndirs == fl->cap) {
+            ULONG ncap = fl->cap ? fl->cap * 2 : 64;
+            ULONG *na = (ULONG *)AllocVec(ncap * sizeof(ULONG), MEMF_PUBLIC);
+            char **np = (char **)AllocVec(ncap * sizeof(char *), MEMF_PUBLIC);
+            if (!na || !np) { if (na) FreeVec(na); if (np) FreeVec(np); return FALSE; }
+            if (fl->ndirs) { memcpy(na, fl->dir_an, fl->ndirs * sizeof(ULONG)); memcpy(np, fl->dir_path, fl->ndirs * sizeof(char *)); }
+            if (fl->dir_an) FreeVec(fl->dir_an);
+            if (fl->dir_path) FreeVec(fl->dir_path);
+            fl->dir_an = na; fl->dir_path = np; fl->cap = ncap;
+        }
+        s = (char *)AllocVec(len, MEMF_PUBLIC);
+        if (!s) return FALSE;
+        snprintf(s, len, "%s%s/", pp, name);
+        fl->dir_an[fl->ndirs] = anodenr; fl->dir_path[fl->ndirs] = s; fl->ndirs++;
+        return TRUE;
+    }
+    if (type == PFS_ST_FILE || type == PFS_ST_ROLLOVER) {
+        ULONG a = anodenr, guard = 0, runs = 0, nblk = 0, cs, blk, next;
+        while (a && guard++ < 1000000UL) {
+            if (!pfs_get_anode(fl->v, a, &cs, &blk, &next)) break;
+            if (cs) { runs++; nblk += cs; }
+            a = next;
+        }
+        if (runs > 1 || fl->all) {
+            outf("%6lu %8lu  %s%s\n", (unsigned long)runs, (unsigned long)nblk, dir_path_of(fl, parent), name);
+            fl->listed++;
+        }
+    }
+    return (SetSignal(0, 0) & SIGBREAKF_CTRL_C) == 0;
+}
+
+static void print_files(struct BlockDev *bd, const struct VolumeInfo *v, BOOL all)
+{
+    struct PfsVol pv;
+    struct FileList fl;
+    ULONG i;
+    static char root[] = "";
+    if (v->fskind != FS_PFS) { out("FILES: PFS3 volumes only in this version.\n"); return; }
+    memset(&pv, 0, sizeof(pv));
+    memset(&fl, 0, sizeof(fl));
+    if (!pfs_open(&pv, bd, v)) { outf("FILES: %s\n", pv.err); return; }
+    fl.v = &pv; fl.all = all;
+    fl.dir_an = (ULONG *)AllocVec(64 * sizeof(ULONG), MEMF_PUBLIC);
+    fl.dir_path = (char **)AllocVec(64 * sizeof(char *), MEMF_PUBLIC);
+    if (!fl.dir_an || !fl.dir_path) { out("FILES: out of memory\n"); goto done; }
+    fl.cap = 64;
+    fl.dir_an[0] = PFS_ANODE_ROOTDIR; fl.dir_path[0] = root; fl.ndirs = 1;
+    outf("%s (pieces, blocks, path):\n", all ? "Files" : "Fragmented files");
+    pfs_walk(&pv, files_cb, &fl, NULL);
+    outf("%lu file(s) listed\n", (unsigned long)fl.listed);
+done:
+    for (i = 1; i < fl.ndirs; i++) FreeVec(fl.dir_path[i]);
+    if (fl.dir_an) FreeVec(fl.dir_an);
+    if (fl.dir_path) FreeVec(fl.dir_path);
+    pfs_close(&pv);
+}
+
 static void print_map(const struct FsMap *m, ULONG width)
 {
     char line[260];
@@ -336,6 +418,7 @@ LONG cli_run(void)
         out(shown ? "\n" : " none\n");
     }
     if (args[A_MAP]) print_map(&map, args[A_WIDTH] ? (ULONG)*(LONG *)args[A_WIDTH] : 64);
+    if (args[A_FILES]) print_files(bd, v, args[A_DEBUG] != 0);
     FsMap_Free(&map);
 
 done:

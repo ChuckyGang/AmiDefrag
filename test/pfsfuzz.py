@@ -61,6 +61,10 @@ try:
         if kind == "mkdir":
             lk, name = parent_lock(op[1])
             r = b.create_dir(lk, name)
+            # CreateDir returns an exclusive lock: free it or every later
+            # Lock() on the directory fails with "object in use"
+            if r[0]:
+                b.free_lock(r[0])
             out["log"].append(["mkdir", op[1], r[0]])
         elif kind == "write":
             path, size, seed = op[1], op[2], op[3]
@@ -163,17 +167,19 @@ def build_image(img, rng, it):
     cap = max(8000, total // 10)
     files = {}
     ops = []
-    # subdirectories exist for the walk, but the handler bridge cannot
-    # open files inside them, so every file lives in the root
-    for d in range(rng.randint(0, 2)):
+    dirs = [""]
+    for d in range(rng.randint(0, 3)):
         ops.append(["mkdir", f"dir{d}"])
+        dirs.append(f"dir{d}/")
+    # the journal first: it must exist before the extra files fill the disk
+    ops.append(["write", "AmiDefrag.journal", 128 * 1024, "zero"])
     names = []
     used = n = 0
     while used < budget and n < 400:
         size = min(cap, rng.choice([rng.randint(1, 3000), rng.randint(3000, 60000),
                                     rng.randint(60000, 400000), rng.randint(200000, cap)]))
         if used + size > budget: break
-        path = f"f{n}"
+        path = rng.choice(dirs) + f"f{n}"
         seed = f"{it}:{path}:{size}"
         ops.append(["write", path, size, seed])
         files[path] = content_md5(size, seed)
@@ -186,12 +192,11 @@ def build_image(img, rng, it):
     extra = 0
     while extra < 40:
         size = min(cap, rng.randint(50000, 600000))
-        path = f"g{extra}"
+        path = rng.choice(dirs) + f"g{extra}"
         seed = f"{it}:{path}:{size}"
         ops.append(["write", path, size, seed])
         files[path] = content_md5(size, seed)
         extra += 1
-    ops.append(["write", "AmiDefrag.journal", 128 * 1024, "zero"])
     ops.append(["flush"])
     res = bridge(img, ops)
     if os.environ.get("PFSFUZZ_DEBUG"):

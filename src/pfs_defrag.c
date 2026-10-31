@@ -127,12 +127,12 @@ static ULONG gather_chain(struct Eng *e, ULONG anodenr, ULONG *nblk, ULONG *runs
 /* walk: references, consistency, candidates                           */
 /* ------------------------------------------------------------------ */
 
-static BOOL collect_cb(void *ud, ULONG anodenr, LONG type, const char *name)
+static BOOL collect_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULONG parent)
 {
     struct Eng *e = (struct Eng *)ud;
     struct PfsVol *v = &e->v;
     ULONG a = anodenr, guard = 0, runs = 0, nblk = 0, cs, blk, next;
-    (void)name;
+    (void)name; (void)parent;
 
     /* deleted files keep their anode chain for undelete, but the handler
      * frees their blocks in the bitmap: no reference, no consistency rule */

@@ -352,7 +352,7 @@ static BOOL walk_dir(struct PfsVol *v, ULONG dirnr, PfsWalkCb cb, void *ud, stru
             if (len == 0) break;
             if (off + 18 + nl > v->resblksize) nl = 0;
             copy_name(name, sizeof(name), v->dbuf + off + 18, nl);
-            if (!cb(ud, an, (LONG)type, name)) return FALSE;
+            if (!cb(ud, an, (LONG)type, name, dirnr)) return FALSE;
             if (type == PFS_ST_USERDIR && sub) { if (!ustack_push(sub, an)) return FALSE; }
             off += len;
         }
@@ -393,7 +393,7 @@ BOOL pfs_walk(struct PfsVol *v, PfsWalkCb cb, void *ud, ULONG *dirs)
                 if (!an) continue;
                 if (nl > 15) nl = 15;
                 copy_name(name, sizeof(name), v->dbuf + o + 15, nl);
-                if (!cb(ud, an, PFS_ST_DELETED, name)) return FALSE;
+                if (!cb(ud, an, PFS_ST_DELETED, name, 0)) return FALSE;
             }
         }
     }
@@ -404,10 +404,11 @@ struct Lookup { const char *name; ULONG found; };
 
 static UBYTE upc(UBYTE c) { return (c >= 'a' && c <= 'z') ? (UBYTE)(c - 32) : c; }
 
-static BOOL lookup_cb(void *ud, ULONG anodenr, LONG type, const char *name)
+static BOOL lookup_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULONG parent)
 {
     struct Lookup *l = (struct Lookup *)ud;
     const char *a = l->name, *b = name;
+    (void)parent;
     if (type != PFS_ST_FILE) return TRUE;
     while (*a && *b && upc((UBYTE)*a) == upc((UBYTE)*b)) { a++; b++; }
     if (*a == '\0' && *b == '\0') { l->found = anodenr; return FALSE; }

@@ -113,11 +113,13 @@ BOOL  pfs_bm_flush(struct PfsVol *v);                   /* write dirty bitmap se
 /* smallest free run of at least `need` sectors (best fit); 0 = none */
 ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need);
 
-/* Directory walk: cb(ud, anodenr, type, name) for every entry reached
- * from the root directory and every deldir entry (type PFS_ST_DELETED).
- * name is a NUL-terminated copy valid during the call.  Return FALSE from
- * cb to stop (the walk returns FALSE then). */
-typedef BOOL (*PfsWalkCb)(void *ud, ULONG anodenr, LONG type, const char *name);
+/* Directory walk: cb(ud, anodenr, type, name, parent) for every entry
+ * reached from the root directory (parent = anodenr of the directory it
+ * is in, PFS_ANODE_ROOTDIR for the root) and every deldir entry (type
+ * PFS_ST_DELETED, parent 0).  A directory's entry is reported before its
+ * contents.  name is a NUL-terminated copy valid during the call.  Return
+ * FALSE from cb to stop (the walk returns FALSE then). */
+typedef BOOL (*PfsWalkCb)(void *ud, ULONG anodenr, LONG type, const char *name, ULONG parent);
 BOOL  pfs_walk(struct PfsVol *v, PfsWalkCb cb, void *ud, ULONG *dirs);
 
 /* anodenr of a file entry with this name in the root directory, 0 = none */
