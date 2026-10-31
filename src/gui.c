@@ -610,12 +610,14 @@ static void defragment(struct Gui *g)
         "proceeding. The author accepts NO responsibility for any\n"
         "loss of data caused by this software.\n\n"
         "%lu fragmented file(s), %lu blocks.\n"
-        "%lu can be made contiguous, %lu have no free run large enough.\n\n"
+        "%lu can be made contiguous directly, %lu have no free run\n"
+        "large enough%s.\n\n"
         "The volume is inhibited while this runs: nothing else must\n"
         "write to it. Files are moved one at a time; a crash leaves the\n"
         "volume valid (the filesystem may validate it on the next mount).",
         g->map.volname, v->dosname, (unsigned long)st.candidates, (unsigned long)st.cand_blocks,
-        (unsigned long)st.moved, (unsigned long)st.skipped_space);
+        (unsigned long)st.moved, (unsigned long)(st.skipped_space + st.needs_room),
+        v->fskind == FS_PFS ? " (room is made for them by moving other files aside)" : "");
     if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
         set_status(g, "Cancelled.");
         BlockDev_Close(bd);
@@ -635,16 +637,19 @@ static void defragment(struct Gui *g)
         set_stop_enabled(g, FALSE);
         BlockDev_Close(bd);
         if (rc != RETURN_FAIL && !st.needs_validation && !g->quit) {
-            char moved[24];
+            char moved[24], aside[24];
             Volume_SizeString(st.moved_blocks, g->map.blocksize, moved, sizeof(moved));
+            Volume_SizeString(st.moved_aside_blocks, g->map.blocksize, aside, sizeof(aside));
             AD_SNPRINTF(body,
                 "Defragmentation of %s finished.\n\n"
                 "Files made contiguous: %lu of %lu\n"
                 "Data moved: %s (%lu blocks)\n"
+                "Moved aside to make room: %lu run(s), %s\n"
                 "Time: %lu min %lu s\n"
-                "Skipped, no free run large enough: %lu\n%s",
+                "Skipped, no room could be made: %lu\n%s",
                 g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
                 moved, (unsigned long)st.moved_blocks,
+                (unsigned long)st.moved_aside, aside,
                 (unsigned long)(secs / 60), (unsigned long)(secs % 60),
                 (unsigned long)st.skipped_space,
                 st.aborted ? "\nStopped at your request; the volume is consistent." : "");

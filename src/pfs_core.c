@@ -306,14 +306,34 @@ BOOL pfs_bm_flush(struct PfsVol *v)
     return TRUE;
 }
 
-ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need)
+/* Free-run scanner shared by the finders below.  Bits inside the
+ * exclusion zone [ex_lo, ex_hi) (absolute sectors) count as used.
+ * mode 0: best fit, the smallest run of at least `need` sectors.
+ * mode 1: the largest run whose start is not in skip[]; *len = its length. */
+static ULONG bm_scan(const struct PfsVol *v, int mode, ULONG need, ULONG ex_lo, ULONG ex_hi,
+                     const ULONG *skip, ULONG nskip, ULONG *len)
 {
     ULONG span = v->disksize - v->bitmapstart;
-    ULONG li, run_start = 0, run_len = 0, best = 0, best_len = 0xFFFFFFFFUL;
-    if (need == 0 || !v->bm_loaded) return 0;
-#define END_RUN() do { if (run_len >= need && run_len < best_len) { best = run_start; best_len = run_len; } run_len = 0; } while (0)
-    for (li = 0; li < v->bm_longs && best_len != need; li++) {
+    ULONG li, run_start = 0, run_len = 0, best = 0, best_len = mode ? 0 : 0xFFFFFFFFUL;
+    ULONG rlo = 0, rhi = 0;
+    if (!v->bm_loaded || (mode == 0 && need == 0)) return 0;
+    if (ex_hi > ex_lo && ex_hi > v->bitmapstart) {
+        rlo = ex_lo > v->bitmapstart ? ex_lo - v->bitmapstart : 0;
+        rhi = ex_hi - v->bitmapstart;
+        if (rhi > span) rhi = span;
+    }
+#define END_RUN() do { \
+        if (mode == 0) { if (run_len >= need && run_len < best_len) { best = run_start; best_len = run_len; } } \
+        else if (run_len > best_len) { ULONG k; BOOL sk = FALSE; \
+            for (k = 0; k < nskip; k++) if (skip[k] == run_start + v->bitmapstart) sk = TRUE; \
+            if (!sk) { best = run_start; best_len = run_len; } } \
+        run_len = 0; } while (0)
+    for (li = 0; li < v->bm_longs && !(mode == 0 && best_len == need); li++) {
         ULONG w = v->bm[li], base = li * 32;
+        if (rhi > rlo && base < rhi && base + 32 > rlo) {           /* long touches the zone */
+            ULONG b0 = rlo > base ? rlo - base : 0, b1 = rhi < base + 32 ? rhi - base : 32, bit;
+            for (bit = b0; bit < b1; bit++) w &= ~(0x80000000UL >> bit);
+        }
         if (w == 0) { if (run_len) END_RUN(); continue; }
         if (w == 0xFFFFFFFFUL && base + 32 <= span) {
             if (run_len == 0) run_start = base;
@@ -331,7 +351,24 @@ ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need)
     }
     if (run_len) END_RUN();
 #undef END_RUN
-    return best_len != 0xFFFFFFFFUL ? best + v->bitmapstart : 0;
+    if (mode == 0) return best_len != 0xFFFFFFFFUL ? best + v->bitmapstart : 0;
+    if (len) *len = best_len;
+    return best_len ? best + v->bitmapstart : 0;
+}
+
+ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need)
+{
+    return bm_scan(v, 0, need, 0, 0, NULL, 0, NULL);
+}
+
+ULONG pfs_bm_find_run_ex(const struct PfsVol *v, ULONG need, ULONG ex_lo, ULONG ex_hi)
+{
+    return bm_scan(v, 0, need, ex_lo, ex_hi, NULL, 0, NULL);
+}
+
+ULONG pfs_bm_largest_run(const struct PfsVol *v, const ULONG *skip, ULONG nskip, ULONG *len)
+{
+    return bm_scan(v, 1, 0, 0, 0, skip, nskip, len);
 }
 
 /* ------------------------------------------------------------------ */

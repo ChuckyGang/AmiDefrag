@@ -3,7 +3,7 @@
 A disk defragmenter for AmigaOS with the classic Windows-defrag block map,
 built so that the disk is **never left in a dangerous state**.
 
-> Status: **v0.4, all three engines in testing.** AmiDefrag analyses FFS,
+> Status: **v0.5, all three engines in testing.** AmiDefrag analyses FFS,
 > PFS3 and SFS volumes and draws their block map, defragments **OFS/FFS**
 > and **PFS3** volumes with the per-file single-sector commit design
 > below, and defragments **SFS** volumes by driving the SmartFilesystem
@@ -69,8 +69,9 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   validator can only find leaked blocks, which it frees. A torn header or
   root write is repaired from the journal on the next run (the root is
   found again by scanning for the journal file's header). Only files in
-  more than one run are touched; free space is not consolidated yet. The
-  boot volume is refused in this version.
+  more than one run are touched; free space is not consolidated yet on
+  FFS (the PFS3 engine's room-making pass is not ported). The boot volume
+  is refused in this version.
   Verified by `test/ffsfuzz.py`: random xdftool images across all DOS
   types, crash and torn-sector injection after random writes, then
   validator + rerun, with every file's md5 checked and the bitmap
@@ -114,7 +115,16 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   super, directory and deldir blocks are never written; pfs3aio does not
   check block datestamps, so the rewritten sectors keep theirs. Volumes
   with cross-linked blocks or a bitmap that disagrees with the chains are
-  refused before anything is written. Verified by `test/pfsfuzz.py`:
+  refused before anything is written.
+  Files with no free run large enough get room made for them in a second
+  pass: the largest free hole is grown by moving the runs next to it
+  aside, one at a time, each with the same commit (rewriting one anode to
+  point at the new place; a run moved aside keeps its place in its file's
+  chain). Runs land outside the area the hole can grow into, so nothing
+  moves twice, and smaller files go first so the holes they leave merge
+  for the larger ones. Runs that fit nowhere are not split, so a nearly
+  full disk can still end with a few fragmented files; those are
+  reported as skipped. Verified by `test/pfsfuzz.py`:
   images filled through the real pfs3aio handler (amifuse handler
   bridge), every file re-read through the handler after clean runs and
   after crash / torn-sector replays aimed at the metadata writes, zero

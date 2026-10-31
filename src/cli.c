@@ -134,6 +134,11 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
          dry ? "would move" : "moved", (unsigned long)st.moved_blocks,
          (unsigned long)st.skipped_space, (unsigned long)st.skipped_error,
          st.needs_validation ? (v->fskind == FS_PFS ? " - RUN AGAIN TO FINISH (journal)" : " - VOLUME NEEDS VALIDATION") : "");
+    if (st.needs_room)
+        outf("%lu file(s) have no free run large enough; the live run makes room by moving neighbours aside.\n",
+             (unsigned long)st.needs_room);
+    if (st.moved_aside)
+        outf("Moved aside to make room: %lu run(s), %lu blocks\n", (unsigned long)st.moved_aside, (unsigned long)st.moved_aside_blocks);
     outf("Device I/O: %lu blocks read, %lu written\n", (unsigned long)bd->reads, (unsigned long)bd->writes);
     return rc;
 }

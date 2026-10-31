@@ -114,6 +114,10 @@ void  pfs_bm_set(struct PfsVol *v, ULONG sector, BOOL isfree);   /* marks the se
 BOOL  pfs_bm_flush(struct PfsVol *v);                   /* write dirty bitmap sectors */
 /* smallest free run of at least `need` sectors (best fit); 0 = none */
 ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need);
+/* the same, with sectors in [ex_lo, ex_hi) counted as used */
+ULONG pfs_bm_find_run_ex(const struct PfsVol *v, ULONG need, ULONG ex_lo, ULONG ex_hi);
+/* largest free run whose start is not one of skip[0..nskip); 0 = none */
+ULONG pfs_bm_largest_run(const struct PfsVol *v, const ULONG *skip, ULONG nskip, ULONG *len);
 
 /* Directory walk: cb(ud, anodenr, type, name, parent) for every entry
  * reached from the root directory (parent = anodenr of the directory it

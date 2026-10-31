@@ -243,6 +243,8 @@ def analyse(img):
     return frag, unknown, note, r.stdout
 
 
+LAST_ASIDE = 0
+
 def run_defrag(img, env=None, trace=False):
     """With trace=True the shim lists every write; single-sector writes are
     the metadata ones (journal, bitmap, anode) and make the best crash
@@ -266,7 +268,11 @@ def run_defrag(img, env=None, trace=False):
             else:
                 prev = None
     writes = skipped = moved = errors = 0
+    global LAST_ASIDE
+    LAST_ASIDE = 0
     for line in r.stdout.splitlines():
+        if line.startswith("Moved aside to make room:"):
+            LAST_ASIDE = int(line.split(":")[1].split()[0])
         if line.startswith("Device I/O:"):
             writes = int(line.split("read,")[1].split()[0])
         if line.startswith("Done:"):
@@ -299,7 +305,7 @@ def iteration(it, seed):
 
     # --- 1. clean run ---
     rc, writes, moved, skipped, errors, out, (singles, pairs) = run_defrag(img, trace=True)
-    log.append(f"clean run: rc {rc}, {writes} writes ({len(singles)} metadata, {len(pairs)} two-sector anodes), moved {moved}, skipped {skipped}, errors {errors}")
+    log.append(f"clean run: rc {rc}, {writes} writes ({len(singles)} metadata, {len(pairs)} two-sector anodes), moved {moved}, skipped {skipped}, errors {errors}, moved aside {LAST_ASIDE}")
     ok &= expect(rc in (0, 5), f"defrag rc {rc}\n{out[-1500:]}", log)
     ok &= expect(errors == 0, f"{errors} files skipped with errors\n{out[-1500:]}", log)
     bad, hok = check_files(img, files)

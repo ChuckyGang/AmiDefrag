@@ -44,6 +44,9 @@ struct FfsDefragStats {
     ULONG moved;             /* files made contiguous */
     ULONG moved_blocks;
     ULONG skipped_space;     /* no free run large enough */
+    ULONG needs_room;        /* dry run: files that need room made first (PFS3) */
+    ULONG moved_aside;       /* runs moved out of the way to make room (PFS3) */
+    ULONG moved_aside_blocks;
     ULONG skipped_error;     /* unreadable / inconsistent file */
     ULONG repaired;          /* headers restored from the journal */
     BOOL  needs_validation;  /* bitmap flag left invalid on purpose */
