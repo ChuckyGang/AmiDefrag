@@ -11,6 +11,7 @@ int main(int argc, char **argv)
     LONG rc;
     host_argc = argc;
     host_argv = argv;
+    SetSignal(0, 0);          /* arm the Ctrl-C handler before any long run */
     rc = cli_run();
     if (rc == CLI_NO_ARGS) {
         printf("AmiDefrag (host build, image-file mode)\n"

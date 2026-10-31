@@ -32,6 +32,7 @@ static void outf(const char *fmt, ...)
 }
 
 static void cli_log(void *ud, const char *line) { (void)ud; out(line); out("\n"); }
+static BOOL cli_move(void *ud, ULONG blk, ULONG n, UBYTE cls);
 
 static BOOL cli_confirm(void)
 {
@@ -64,8 +65,9 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
              "runs, so nothing else must write to it.\n", v->dosname, v->devname);
         if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
     }
-    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, NULL, NULL, &st, err, sizeof(err));
+    rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, dry ? NULL : cli_move, NULL, &st, err, sizeof(err));
     if (err[0]) outf("%s\n", err);
+    if (st.aborted) out("Stopped at your request (Ctrl-C) after the current file; the volume is consistent.\n");
     outf("%s: %lu fragmented, %lu %s (%lu blocks), %lu skipped for space, %lu skipped with errors%s\n",
          dry ? "Dry run" : "Done", (unsigned long)st.candidates, (unsigned long)st.moved,
          dry ? "would move" : "moved", (unsigned long)st.moved_blocks,
@@ -79,6 +81,20 @@ static BOOL cli_progress(void *ud, ULONG done, ULONG total, const char *what)
 {
     (void)ud; (void)done; (void)total; (void)what;
     return (SetSignal(0, 0) & SIGBREAKF_CTRL_C) == 0;
+}
+
+/* Engine move callback: Ctrl-C stops the run after the file in flight.
+ * The engine calls this for every block range it changes as well as for
+ * its between-files poll (cls 0xFF), so the stop must stick once seen. */
+static BOOL cli_stop_seen;
+static BOOL cli_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
+{
+    (void)ud; (void)blk; (void)n; (void)cls;
+    if (!cli_stop_seen && (SetSignal(0, 0) & SIGBREAKF_CTRL_C)) {
+        SetSignal(0, SIGBREAKF_CTRL_C);
+        cli_stop_seen = TRUE;
+    }
+    return !cli_stop_seen;
 }
 
 static void list_volumes(const struct VolumeList *vl)

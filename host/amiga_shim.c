@@ -111,9 +111,11 @@ static void on_sigint(int s) { (void)s; g_ctrlc = 1; }
 ULONG SetSignal(ULONG new_sig, ULONG mask)
 {
     static int armed = 0;
-    (void)new_sig; (void)mask;
+    ULONG old;
     if (!armed) { signal(SIGINT, on_sigint); armed = 1; }
-    return g_ctrlc ? SIGBREAKF_CTRL_C : 0;
+    old = g_ctrlc ? SIGBREAKF_CTRL_C : 0;
+    if (mask & SIGBREAKF_CTRL_C) g_ctrlc = (new_sig & SIGBREAKF_CTRL_C) ? 1 : 0;
+    return old;
 }
 
 /* No exec devices on the host: BlockDev_Open fails at the port stage. */

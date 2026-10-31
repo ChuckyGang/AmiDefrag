@@ -40,7 +40,7 @@
 
 extern struct GfxBase *GfxBase;
 
-enum { GID_LIST = 1, GID_ANALYZE, GID_RESCAN, GID_DEFRAG, GID_ABOUT };
+enum { GID_LIST = 1, GID_ANALYZE, GID_RESCAN, GID_DEFRAG, GID_STOP, GID_ABOUT };
 
 #define CELL   5          /* square size in pixels */
 #define PITCH  6          /* square + gap */
@@ -49,7 +49,7 @@ struct Gui {
     struct Screen  *scr;
     APTR            vi;
     struct Window  *win;
-    struct Gadget  *glist, *lv_gad, *analyze_gad, *defrag_gad;
+    struct Gadget  *glist, *lv_gad, *analyze_gad, *defrag_gad, *stop_gad;
     struct List     labels;
     struct Node     nodes[MAX_VOLUMES];
     char            texts[MAX_VOLUMES][96];
@@ -68,6 +68,7 @@ struct Gui {
     WORD  map_vol;               /* volume index the map belongs to */
     BOOL  quit;
     BOOL  scanning;
+    BOOL  stop;                  /* Stop button pressed during a scan or run */
     char  status[300];
     ULONG last_pct;
 };
@@ -221,6 +222,14 @@ static void set_defrag_enabled(struct Gui *g, BOOL on)
     GT_SetGadgetAttrsA(g->defrag_gad, g->win, NULL, t);
 }
 
+/* The Stop button is live only while a scan or a defragmentation runs. */
+static void set_stop_enabled(struct Gui *g, BOOL on)
+{
+    struct TagItem t[] = { { GA_Disabled, !on }, { TAG_DONE, 0 } };
+    g->stop = FALSE;
+    GT_SetGadgetAttrsA(g->stop_gad, g->win, NULL, t);
+}
+
 /* ------------------------------------------------------------------ */
 /* volume list                                                         */
 /* ------------------------------------------------------------------ */
@@ -287,8 +296,9 @@ static BOOL scan_progress(void *ud, ULONG done, ULONG total, const char *what)
         if (iclass == IDCMP_CLOSEWINDOW) g->quit = TRUE;
         else if (iclass == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(g->win); redraw_all(g); GT_EndRefresh(g->win, TRUE); }
         else if (iclass == IDCMP_GADGETUP && gad->GadgetID == GID_LIST) g->selected = (WORD)code;
+        else if (iclass == IDCMP_GADGETUP && gad->GadgetID == GID_STOP) g->stop = TRUE;
     }
-    if (g->quit) return FALSE;
+    if (g->quit || g->stop) return FALSE;
     if (pct != g->last_pct) {
         char s[96];
         g->last_pct = pct;
@@ -336,6 +346,7 @@ static void analyze(struct Gui *g)
         return;
     }
     GT_SetGadgetAttrsA(g->analyze_gad, g->win, NULL, dis);
+    set_stop_enabled(g, TRUE);
     g->scanning = TRUE;
     g->last_pct = 0xFFFFFFFFUL;
     if (FsMap_Build(bd, v, &g->map, scan_progress, g)) {
@@ -350,6 +361,7 @@ static void analyze(struct Gui *g)
         set_status(g, s);
     }
     g->scanning = FALSE;
+    set_stop_enabled(g, FALSE);
     GT_SetGadgetAttrsA(g->analyze_gad, g->win, NULL, ena);
     BlockDev_Close(bd);
 }
@@ -374,11 +386,17 @@ static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
     }
     while ((imsg = GT_GetIMsg(g->win->UserPort)) != NULL) {
         ULONG iclass = imsg->Class;
+        struct Gadget *gad = (struct Gadget *)imsg->IAddress;
         GT_ReplyIMsg(imsg);
         if (iclass == IDCMP_CLOSEWINDOW) g->quit = TRUE;
         else if (iclass == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(g->win); redraw_all(g); GT_EndRefresh(g->win, TRUE); }
+        else if (iclass == IDCMP_GADGETUP && gad->GadgetID == GID_STOP && !g->stop) {
+            /* the engine stops between files: the one in flight is committed first */
+            g->stop = TRUE;
+            set_status(g, "Stopping after the current file...");
+        }
     }
-    return !g->quit;
+    return !g->quit && !g->stop;
 }
 
 static LONG ask(struct Gui *g, const char *title, const char *body, const char *gadgets)
@@ -480,11 +498,13 @@ static void defragment(struct Gui *g)
 
     o.dry_run = FALSE;
     g->scanning = TRUE;
+    set_stop_enabled(g, TRUE);
     {
         ULONG t0 = now_seconds(), secs;
         rc = FfsDefrag_Run(bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, defrag_move, g, &st, err, sizeof(err));
         secs = now_seconds() - t0;
         g->scanning = FALSE;
+        set_stop_enabled(g, FALSE);
         BlockDev_Close(bd);
         if (rc != RETURN_FAIL && !st.needs_validation && !g->quit) {
             char moved[24];
@@ -499,7 +519,7 @@ static void defragment(struct Gui *g)
                 moved, (unsigned long)st.moved_blocks,
                 (unsigned long)(secs / 60), (unsigned long)(secs % 60),
                 (unsigned long)st.skipped_space,
-                st.aborted ? "\nStopped early at your request." : "");
+                st.aborted ? "\nStopped at your request; the volume is consistent." : "");
             ask(g, "AmiDefrag", body, "OK");
         }
     }
@@ -537,6 +557,7 @@ static void handle_msg(struct Gui *g, ULONG iclass, UWORD code, struct Gadget *g
         case GID_ANALYZE: analyze(g); break;
         case GID_RESCAN:  rescan(g); set_status(g, "Volume list refreshed."); break;
         case GID_DEFRAG:  if (!g->scanning) defragment(g); break;
+        case GID_STOP:    break;   /* only meaningful inside a run; handled by the callbacks */
         case GID_ABOUT:   show_about(g); break;
         }
         break;
@@ -565,7 +586,7 @@ static BOOL build_window(struct Gui *g)
     g->win_h = g->scr->Height < 480 ? g->scr->Height - 2 : 480;
     inner_w  = g->win_w - g->bor_l - bor_r;
     btn_h    = g->fh + 6;
-    btn_w    = (inner_w - pad * 5) / 4;
+    btn_w    = (inner_w - pad * 6) / 5;
     lv_h     = 4 * (g->fh + 1) + 4;
 
     obtain_pens(g);
@@ -599,6 +620,9 @@ static BOOL build_window(struct Gui *g)
     ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Defragment"; ng.ng_GadgetID = GID_DEFRAG;
     { struct TagItem t[] = { { GA_Disabled, TRUE }, { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = g->defrag_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Stop";       ng.ng_GadgetID = GID_STOP;
+    { struct TagItem t[] = { { GA_Disabled, TRUE }, { GT_Underscore, '_' }, { TAG_DONE, 0 } };
+      prev = g->stop_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
     ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "A_bout";      ng.ng_GadgetID = GID_ABOUT;
     { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
@@ -652,7 +676,7 @@ int gui_run(void)
     if (!build_window(g)) { rc = 20; goto done; }
 
     redraw_all(g);
-    set_status(g, g->vols->count ? "Select a volume and press Analyze. Nothing is written in this version."
+    set_status(g, g->vols->count ? "Select a volume and press Analyze."
                                  : "No partitions found in the DOS device list.");
 
     while (!g->quit) {

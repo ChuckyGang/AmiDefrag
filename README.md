@@ -101,7 +101,10 @@ Amiga-only file. A Linux GUI frontend over the same map is planned.
 ## Use
 
 GUI: run `AmiDefrag` from the Shell without arguments or from Workbench.
-Pick a volume, press **Analyze**.
+Pick a volume, press **Analyze**. **Stop** ends a scan at once and a
+defragmentation after the file in flight has been committed, so the
+volume is consistent; the rest can be done in a later run. In the CLI,
+Ctrl-C does the same.
 
 CLI (Amiga and Linux share the template):
 
