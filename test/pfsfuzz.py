@@ -101,8 +101,19 @@ try:
                 if not st:
                     res[path] = "MISSING"; continue
                 size = st["size"]
-                data = b.read_file(path, size, 0)
-                res[path] = hashlib.md5(data).hexdigest() if len(data) == size else "SHORT:%d/%d" % (len(data), size)
+                # read in chunks: read_file() allocates the whole size in
+                # emulated memory and fails on files of a few MB
+                r = b.open_file(path, os.O_RDONLY)
+                if not r:
+                    res[path] = "OPENFAIL"; continue
+                fh, lk = r
+                h = hashlib.md5(); got = 0
+                while got < size:
+                    chunk = b.read_handle_at(fh, got, min(262144, size - got))
+                    if not chunk: break
+                    h.update(chunk); got += len(chunk)
+                b.close_file(fh)
+                res[path] = h.hexdigest() if got == size else "SHORT:%d/%d" % (got, size)
             out["md5"] = res
         elif kind == "flush":
             b.flush_volume()
