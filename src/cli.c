@@ -75,10 +75,9 @@ static LONG run_defrag_sfs(struct BlockDev *bd, const struct VolumeInfo *v, BOOL
     nblocks = map.nblocks; bsize = map.blocksize;
     FsMap_Free(&map);
     if (!SfsDefrag_Probe(v, &st, err, sizeof(err))) { outf("%s\n", err); return RETURN_ERROR; }
-    outf("Handler: SmartFilesystem %lu.%lu, %lu blocks of %lu bytes, task stack %lu bytes%s\n",
+    outf("Handler: SmartFilesystem %lu.%lu, %lu blocks of %lu bytes, task stack %lu bytes\n",
          (unsigned long)(st.version >> 16), (unsigned long)(st.version & 0xFFFF),
-         (unsigned long)st.total_blocks, (unsigned long)st.block_size, (unsigned long)st.stack,
-         st.stack && st.stack < SFS_MIN_STACK ? " (too small, refusing)" : "");
+         (unsigned long)st.total_blocks, (unsigned long)st.block_size, (unsigned long)st.stack);
     if (!force) {
         outf("EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n"
              "AmiDefrag drives the defragmenter built into the SmartFilesystem handler of\n"

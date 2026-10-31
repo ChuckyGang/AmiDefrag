@@ -507,13 +507,12 @@ static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
         "together to consolidate free space, so it moves more than the\n"
         "fragmented files and can take a long time; Stop ends the run\n"
         "after the current step.\n\n"
-        "Handler: SmartFilesystem %lu.%lu, stack %lu bytes%s\n"
+        "Handler: SmartFilesystem %lu.%lu, stack %lu bytes\n"
         "%lu files, %lu fragmented, %lu extra pieces.\n\n"
         "Keep a FULL BACKUP anyway. The author accepts NO responsibility\n"
         "for any loss of data caused by this software.",
         volname, v->dosname,
         (unsigned long)(st.version >> 16), (unsigned long)(st.version & 0xFFFF), (unsigned long)st.stack,
-        st.stack && st.stack < SFS_MIN_STACK ? " - TOO SMALL, the run will be refused" : "",
         (unsigned long)files0, (unsigned long)frag0, (unsigned long)runs0);
     if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
         set_status(g, "Cancelled.");

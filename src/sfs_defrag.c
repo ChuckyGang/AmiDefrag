@@ -131,12 +131,6 @@ LONG SfsDefrag_Run(const struct VolumeInfo *vi, ULONG expect_blocks, ULONG expec
                st->total_blocks, st->block_size);
         return RETURN_ERROR;
     }
-    if (st->stack && st->stack < SFS_MIN_STACK) {
-        seterr(err, errlen, "the handler runs on a %lu byte stack; the defragmenter needs at least %lu. "
-               "Set the filesystem's stack size in the RDB (AmiPart: FS manager / ADDFS STACKSIZE) and reboot",
-               st->stack, SFS_MIN_STACK);
-        return RETURN_ERROR;
-    }
 
     buf = (ULONG *)AllocVec((STEP_LONGS + STEP_SLACK) * sizeof(ULONG), MEMF_PUBLIC | MEMF_CLEAR);
     if (!buf) { seterr(err, errlen, "out of memory", 0, 0); return RETURN_ERROR; }

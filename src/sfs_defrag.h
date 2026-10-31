@@ -49,10 +49,8 @@ BOOL SfsDefrag_Available(const struct VolumeInfo *vi);
 
 /* Ask the handler who it is without changing anything: fills version,
  * total_blocks, block_size and stack.  The defragmenter runs inside the
- * handler task, on the handler's stack; a partition mounted without the
- * FSEB_STACKSIZE patch flag runs on the OS default, so the size is shown
- * before a run and refused below SFS_MIN_STACK. */
-#define SFS_MIN_STACK 8192
+ * handler task on the handler's stack, which is shown for information:
+ * SFS's own SFSdefrag runs fine on the 4000-byte default. */
 BOOL SfsDefrag_Probe(const struct VolumeInfo *vi, struct SfsDefragStats *st, char *err, ULONG errlen);
 
 /* expect_blocks / expect_bsize: the map's view of the volume; the run is
