@@ -45,6 +45,14 @@ BOOL SfsDefrag_Available(const struct VolumeInfo *vi)
 
 #ifdef AMIDEFRAG_HOST
 
+BOOL SfsDefrag_Probe(const struct VolumeInfo *vi, struct SfsDefragStats *st, char *err, ULONG errlen)
+{
+    (void)vi;
+    memset(st, 0, sizeof(*st));
+    seterr(err, errlen, "SFS is defragmented through the SmartFilesystem handler: mount the volume on an Amiga", 0, 0);
+    return FALSE;
+}
+
 LONG SfsDefrag_Run(const struct VolumeInfo *vi, ULONG expect_blocks, ULONG expect_bsize,
                    SfsDefragLog log, SfsDefragMove move, void *ud,
                    struct SfsDefragStats *st, char *err, ULONG errlen)
@@ -57,50 +65,77 @@ LONG SfsDefrag_Run(const struct VolumeInfo *vi, ULONG expect_blocks, ULONG expec
 
 #else
 
+/* The handler task's stack: the defragmenter runs on it. */
+static ULONG handler_stack(struct MsgPort *port)
+{
+    struct Task *t = port->mp_SigTask;
+    if (!t || !t->tc_SPUpper || !t->tc_SPLower) return 0;
+    return (ULONG)((UBYTE *)t->tc_SPUpper - (UBYTE *)t->tc_SPLower);
+}
+
+static struct MsgPort *probe(const struct VolumeInfo *vi, struct SfsDefragStats *st, char *err, ULONG errlen)
+{
+    struct MsgPort *port;
+    struct TagItem tags[4];
+    char dev[40];
+
+    memset(st, 0, sizeof(*st));
+    if (err && errlen) err[0] = '\0';
+    if (!SfsDefrag_Available(vi)) {
+        seterr(err, errlen, "SFS is defragmented through the SmartFilesystem handler: the volume must be mounted", 0, 0);
+        return NULL;
+    }
+    snprintf(dev, sizeof(dev), "%s:", vi->dosname);
+    port = DeviceProc((CONST_STRPTR)dev);
+    if (!port) { seterr(err, errlen, "no handler process for the volume (error %lu)", (ULONG)IoErr(), 0); return NULL; }
+
+    tags[0].ti_Tag = ASQ_VERSION;      tags[0].ti_Data = 0;
+    tags[1].ti_Tag = ASQ_TOTAL_BLOCKS; tags[1].ti_Data = 0;
+    tags[2].ti_Tag = ASQ_BLOCK_SIZE;   tags[2].ti_Data = 0;
+    tags[3].ti_Tag = TAG_DONE;         tags[3].ti_Data = 0;
+    if (DoPkt(port, (LONG)ACTION_SFS_QUERY, (LONG)tags, 0, 0, 0, 0) == DOSFALSE) {
+        seterr(err, errlen, "the handler does not answer ACTION_SFS_QUERY (error %lu): not SmartFilesystem?", (ULONG)IoErr(), 0);
+        return NULL;
+    }
+    st->version      = tags[0].ti_Data;
+    st->total_blocks = tags[1].ti_Data;
+    st->block_size   = tags[2].ti_Data;
+    st->stack        = handler_stack(port);
+    if (st->version < SFS_MIN_VERSION) {
+        seterr(err, errlen, "SmartFilesystem %lu.%lu is too old: the defragment packets need 1.83 or newer",
+               st->version >> 16, st->version & 0xFFFF);
+        return NULL;
+    }
+    return port;
+}
+
+BOOL SfsDefrag_Probe(const struct VolumeInfo *vi, struct SfsDefragStats *st, char *err, ULONG errlen)
+{
+    return probe(vi, st, err, errlen) != NULL;
+}
+
 LONG SfsDefrag_Run(const struct VolumeInfo *vi, ULONG expect_blocks, ULONG expect_bsize,
                    SfsDefragLog log, SfsDefragMove move, void *ud,
                    struct SfsDefragStats *st, char *err, ULONG errlen)
 {
     struct MsgPort *port;
-    char   dev[40];
     ULONG *buf = NULL;
     LONG   rc = RETURN_ERROR;
     BOOL   stop = FALSE, done = FALSE;
     ULONG  last_log_blocks = 0;
 
-    memset(st, 0, sizeof(*st));
-    if (err && errlen) err[0] = '\0';
-
-    if (!SfsDefrag_Available(vi)) {
-        seterr(err, errlen, "SFS is defragmented through the SmartFilesystem handler: the volume must be mounted", 0, 0);
+    port = probe(vi, st, err, errlen);
+    if (!port) return RETURN_ERROR;
+    if (st->total_blocks != expect_blocks || st->block_size != expect_bsize) {
+        seterr(err, errlen, "the handler reports %lu blocks of %lu bytes, the map differs: analyze again",
+               st->total_blocks, st->block_size);
         return RETURN_ERROR;
     }
-    snprintf(dev, sizeof(dev), "%s:", vi->dosname);
-    port = DeviceProc((CONST_STRPTR)dev);
-    if (!port) { seterr(err, errlen, "no handler process for the volume (error %lu)", (ULONG)IoErr(), 0); return RETURN_ERROR; }
-
-    {
-        struct TagItem tags[4];
-        tags[0].ti_Tag = ASQ_VERSION;      tags[0].ti_Data = 0;
-        tags[1].ti_Tag = ASQ_TOTAL_BLOCKS; tags[1].ti_Data = 0;
-        tags[2].ti_Tag = ASQ_BLOCK_SIZE;   tags[2].ti_Data = 0;
-        tags[3].ti_Tag = TAG_DONE;         tags[3].ti_Data = 0;
-        if (DoPkt(port, (LONG)ACTION_SFS_QUERY, (LONG)tags, 0, 0, 0, 0) == DOSFALSE) {
-            seterr(err, errlen, "the handler does not answer ACTION_SFS_QUERY (error %lu): not SmartFilesystem?", (ULONG)IoErr(), 0);
-            return RETURN_ERROR;
-        }
-        st->version      = tags[0].ti_Data;
-        st->total_blocks = tags[1].ti_Data;
-        if (st->version < SFS_MIN_VERSION) {
-            seterr(err, errlen, "SmartFilesystem %lu.%lu is too old: the defragment packets need 1.83 or newer",
-                   st->version >> 16, st->version & 0xFFFF);
-            return RETURN_ERROR;
-        }
-        if (st->total_blocks != expect_blocks || tags[2].ti_Data != expect_bsize) {
-            seterr(err, errlen, "the handler reports %lu blocks of %lu bytes, the map differs: analyze again",
-                   st->total_blocks, tags[2].ti_Data);
-            return RETURN_ERROR;
-        }
+    if (st->stack && st->stack < SFS_MIN_STACK) {
+        seterr(err, errlen, "the handler runs on a %lu byte stack; the defragmenter needs at least %lu. "
+               "Set the filesystem's stack size in the RDB (AmiPart: FS manager / ADDFS STACKSIZE) and reboot",
+               st->stack, SFS_MIN_STACK);
+        return RETURN_ERROR;
     }
 
     buf = (ULONG *)AllocVec((STEP_LONGS + STEP_SLACK) * sizeof(ULONG), MEMF_PUBLIC | MEMF_CLEAR);
@@ -113,9 +148,9 @@ LONG SfsDefrag_Run(const struct VolumeInfo *vi, ULONG expect_blocks, ULONG expec
     }
     if (log) {
         char line[96];
-        snprintf(line, sizeof(line), "SmartFilesystem %lu.%lu, %lu blocks: defragmenter started",
+        snprintf(line, sizeof(line), "SmartFilesystem %lu.%lu, %lu blocks, handler stack %lu: defragmenter started",
                  (unsigned long)(st->version >> 16), (unsigned long)(st->version & 0xFFFF),
-                 (unsigned long)st->total_blocks);
+                 (unsigned long)st->total_blocks, (unsigned long)st->stack);
         log(ud, line);
     }
 

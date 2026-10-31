@@ -30,6 +30,8 @@
 struct SfsDefragStats {
     ULONG version;           /* handler version, major << 16 | minor */
     ULONG total_blocks;      /* the handler's block count */
+    ULONG block_size;
+    ULONG stack;             /* the handler task's stack in bytes (0 = unknown) */
     ULONG steps;             /* STEP packets sent */
     ULONG moves;             /* MOVE records received */
     ULONG moved_blocks;      /* blocks moved in total */
@@ -44,6 +46,14 @@ typedef BOOL (*SfsDefragMove)(void *ud, ULONG src, ULONG dst, ULONG n);
 
 /* TRUE when the volume has a handler this engine can talk to. */
 BOOL SfsDefrag_Available(const struct VolumeInfo *vi);
+
+/* Ask the handler who it is without changing anything: fills version,
+ * total_blocks, block_size and stack.  The defragmenter runs inside the
+ * handler task, on the handler's stack; a partition mounted without the
+ * FSEB_STACKSIZE patch flag runs on the OS default, so the size is shown
+ * before a run and refused below SFS_MIN_STACK. */
+#define SFS_MIN_STACK 8192
+BOOL SfsDefrag_Probe(const struct VolumeInfo *vi, struct SfsDefragStats *st, char *err, ULONG errlen);
 
 /* expect_blocks / expect_bsize: the map's view of the volume; the run is
  * refused when the handler disagrees.  Return: RETURN_OK done,
