@@ -119,6 +119,35 @@ def copy_file(src, dst):
             raise Full()
         raise
 
+def cleanup_fillers(mnt):
+    """Delete the tail filler, every file left in the sieve directories and
+    the directories themselves. Tolerant: the handlers (through amifuse)
+    turn flaky right after a hard disk-full, so each delete is retried and
+    failures are counted instead of aborting. Returns the failure count."""
+    failed = 0
+    def rm(path, isdir=False):
+        for _ in range(3):
+            try:
+                (os.rmdir if isdir else os.remove)(path)
+                return True
+            except FileNotFoundError:
+                return True
+            except OSError:
+                time.sleep(0.2)
+        return False
+    if not rm(os.path.join(mnt, "zz_tail")): failed += 1
+    try: tops = sorted(n for n in os.listdir(mnt) if n.startswith("sieve"))
+    except OSError: tops = []
+    for i, dn in enumerate(tops):
+        d = os.path.join(mnt, dn)
+        try: names = os.listdir(d)
+        except OSError: names = []
+        for n in names:
+            if not rm(os.path.join(d, n)): failed += 1
+        if not rm(d, isdir=True): failed += 1
+        if (i + 1) % 100 == 0: log(f"cleanup: {i + 1}/{len(tops)} dirs, {failed} failures")
+    return failed
+
 def ami_name(name, taken):
     """Cut to 30 chars, strip characters AmigaDOS cannot take, keep unique."""
     s = "".join(c if (32 < ord(c) < 127 or 160 <= ord(c) < 256) and c not in ':/' else '_'
@@ -143,6 +172,8 @@ def main():
     ap.add_argument("--seed", type=int, default=20261030)
     ap.add_argument("--amipart", default=os.environ.get("AMIPART", os.path.join(HERE, "..", "..", "AmiPart", "host", "amipart")))
     ap.add_argument("--keep-mounted", action="store_true", help="debug: leave the FUSE mount up")
+    ap.add_argument("--cleanup-only", action="store_true",
+                    help="only remove leftover fillers from an existing image (after an interrupted run)")
     a = ap.parse_args()
 
     fs = FS[a.fs]
@@ -162,6 +193,15 @@ def main():
     pad = os.urandom(64 * 1024)
 
     log(f"{a.fs}: {part_bytes // (1024*1024)} MB partition {fs['part']} in {out}")
+    if a.cleanup_only:
+        mount(out, a.fs, mnt)
+        try:
+            failed = cleanup_fillers(mnt)
+            log(f"cleanup done ({failed} failures)")
+        finally:
+            if not a.keep_mounted: unmount(mnt)
+        report(out, fs)
+        return
     make_image(out, cyls, a.fs, a.amipart)
     mount(out, a.fs, mnt)
     try:
@@ -202,8 +242,20 @@ def main():
 
         # 6. real files: own recursive walk so truncated directory names
         # are carried along to the destination path.
-        target = int(part_bytes * a.fill)
+        # Never let a real-file copy run into "disk full": the handlers
+        # (through amifuse) hang on the first operation after a partial big
+        # write, which left the fillers behind in all three first builds.
+        # Cap at 95% of the hole volume and keep a 16 MB margin of free space.
+        target = min(int(part_bytes * a.fill), int(a_bytes * 0.95))
+        MARGIN = 16 * 1024 * 1024
         st = dict(copied=0, nfiles=0, full=False)
+
+        def free_bytes():
+            try:
+                v = os.statvfs(mnt)
+                return v.f_bavail * v.f_frsize
+            except OSError:
+                return None
 
         def copy_tree(src_dir, dst_dir):
             try: entries = sorted(os.listdir(src_dir))
@@ -217,6 +269,9 @@ def main():
                 sp = os.path.join(src_dir, fn)
                 size = os.path.getsize(sp)
                 if size == 0 or size > part_bytes // 4: continue
+                fb = free_bytes()
+                if fb is not None and size + MARGIN > fb:
+                    st["full"] = True; return
                 try:
                     copy_file(sp, os.path.join(dst_dir, ami_name(fn, taken)))
                 except Full:
@@ -239,21 +294,20 @@ def main():
             os.mkdir(top)
             copy_tree(src, top)
         copied, nfiles, full = st["copied"], st["nfiles"], st["full"]
-        log(f"real files done: {nfiles} files, {copied // (1024*1024)} MB" + (" (disk full)" if full else ""))
+        log(f"real files done: {nfiles} files, {copied // (1024*1024)} MB" + (" (stopped at free-space margin)" if full else ""))
 
         # 7. remove tail and gaps. Tail first: SFS parks deleted files in
         # .recycled (FIFO, a few hundred entries) and the many gap deletions
         # that follow push the big tail file out of it again.
-        os.remove(tail)
-        for p in gaps: os.remove(p)
-        for i in range(dirs):
-            try: os.rmdir(os.path.join(mnt, f"sieve{i:04d}"))
-            except OSError: pass
-        log("tail and gap fillers removed")
+        failed = cleanup_fillers(mnt)
+        log(f"tail and gap fillers removed ({failed} failures)")
     finally:
         if not a.keep_mounted:
             unmount(mnt)
 
+    report(out, fs)
+
+def report(out, fs):
     tool = os.path.join(HERE, "..", "host", "amidefrag")
     if os.access(tool, os.X_OK):
         r = sh(f'"{tool}" IMAGE="{out}" PART={fs["part"]}', check=False)
