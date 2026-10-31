@@ -98,8 +98,11 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   anode. The engine inhibits the volume and, per file, copies the data to
   the smallest free run that fits, verifies it, journals the old chain,
   marks the new run used in the data bitmap, then rewrites the *first*
-  anode in place to describe the whole file: one 512-byte sector write,
-  the commit. Afterwards the other anodes of the old chain are cleared
+  anode in place to describe the whole file: a 512-byte sector write,
+  the commit, read back and compared (one anode in every 512 bytes of an
+  anode block straddles a sector boundary; those take two writes, the
+  sector with the block number first, and the recovery decides by the
+  block number). Afterwards the other anodes of the old chain are cleared
   (a free anode is all zeros, as the handler writes it) and the old runs
   freed. Every write before the commit only marks free blocks used and
   every write after it only releases blocks nothing references, so a

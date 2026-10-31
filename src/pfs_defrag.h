@@ -11,8 +11,11 @@
  *   2. copy the data there, read every sector back and compare
  *   3. write the file's old chain and the new run into the journal file
  *   4. mark the new run used in the data bitmap (sector writes)
- *   5. rewrite the FIRST anode in place to {whole size, new run, end of
- *      chain} - one 512-byte sector write, the commit
+*   5. rewrite the FIRST anode in place to {whole size, new run, end of
+ *      chain} - a 512-byte sector write, the commit (an anode that
+ *      straddles a sector boundary takes two, blocknr's sector first,
+ *      and the recovery below decides by blocknr); the anode is read
+ *      back and compared
  *   6. clear the other anodes of the old chain (free anodes are all
  *      zero, exactly what the handler writes), mark the old runs free in
  *      the bitmap, flush the driver, clear the journal entry

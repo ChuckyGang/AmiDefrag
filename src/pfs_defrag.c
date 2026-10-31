@@ -242,11 +242,19 @@ static BOOL journal_recover(struct Eng *e)
     }
     if (e->pieces[0].an != head) return TRUE;
     if (!pfs_get_anode(v, head, &cs, &blk, &next)) return TRUE;
-    committed = (blk == dest && cs == nblk && next == 0);
+    /* blocknr decides: it is written first when the anode spans two
+     * sectors, so the other fields may still be the old or the new ones */
+    committed = (blk == dest);
+    if (!committed && blk != e->pieces[0].blk) {
+        elog(e, "Journal: anode %lu points to neither the old nor the new run, leaving it alone", (unsigned long)head);
+        return TRUE;
+    }
 
     BlockDev_ArmWrites(v->bd);
     if (committed) {
         elog(e, "Journal: finishing the interrupted move of anode %lu", (unsigned long)head);
+        if (cs != nblk || next != 0)
+            if (!pfs_set_anode(v, head, nblk, dest, 0)) return FALSE;
         for (i = 1; i < np; i++) {
             ULONG c2, b2, n2;
             if (!pfs_get_anode(v, e->pieces[i].an, &c2, &b2, &n2)) continue;
@@ -261,7 +269,10 @@ static BOOL journal_recover(struct Eng *e)
         for (s = dest; s < dest + nblk; s++)
             if (pfs_bm_isfree(v, s)) pfs_bm_set(v, s, FALSE);
     } else {
+        ULONG next0 = np > 1 ? e->pieces[1].an : 0;
         elog(e, "Journal: undoing the interrupted move of anode %lu", (unsigned long)head);
+        if (cs != e->pieces[0].cs || next != next0)
+            if (!pfs_set_anode(v, head, e->pieces[0].cs, e->pieces[0].blk, next0)) return FALSE;
         for (s = dest; s < dest + nblk; s++)
             if (!ref_test(e, s) && !pfs_bm_isfree(v, s)) pfs_bm_set(v, s, TRUE);
     }
@@ -347,6 +358,15 @@ static BOOL process_file(struct Eng *e, ULONG anodenr, const char *what)
         seterr(e, "anode write failed - run again to let the journal finish or undo it");
         e->st->needs_validation = TRUE;
         return FALSE;
+    }
+    {
+        ULONG c2, b2, n2;
+        v->abuf_seq = 0xFFFFFFFFUL;          /* read it back from disk, not from the cache */
+        if (!pfs_get_anode(v, anodenr, &c2, &b2, &n2) || c2 != nblk || b2 != dest || n2 != 0) {
+            seterr(e, "anode reads back wrong after the commit - run again to let the journal finish");
+            e->st->needs_validation = TRUE;
+            return FALSE;
+        }
     }
 
     /* 6. release the old chain */

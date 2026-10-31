@@ -179,16 +179,29 @@ BOOL pfs_get_anode(struct PfsVol *v, ULONG anodenr, ULONG *cs, ULONG *blk, ULONG
 
 BOOL pfs_set_anode(struct PfsVol *v, ULONG anodenr, ULONG cs, ULONG blk, ULONG next)
 {
-    ULONG o = locate_anode(v, anodenr), k;
+    ULONG o = locate_anode(v, anodenr), k1, k2, kfirst, ksecond;
     if (o == 0xFFFFFFFFUL) return FALSE;
-    /* refresh the sector from disk first so that the other anodes in it
-     * are written back exactly as they are now */
-    k = o / SEC;
-    if (!pfs_read_sectors(v, v->abuf_blk + k, 1, v->abuf + k * SEC)) return FALSE;
+    /* An anode sits at 16 + 12 * slot, so one anode per 512 bytes of an
+     * anode block straddles a sector boundary (slot 41 at 508..519, slot
+     * 126 at 1528..1539, ...); its fields never do (offsets are multiples
+     * of 4).  Refresh the sector(s) from disk first so that the other
+     * anodes in them are written back exactly as they are now. */
+    k1 = o / SEC;
+    k2 = (o + 11) / SEC;
+    if (!pfs_read_sectors(v, v->abuf_blk + k1, 1, v->abuf + k1 * SEC)) return FALSE;
+    if (k2 != k1 && !pfs_read_sectors(v, v->abuf_blk + k2, 1, v->abuf + k2 * SEC)) return FALSE;
     put32(v->abuf, o, cs);
     put32(v->abuf, o + 4, blk);
     put32(v->abuf, o + 8, next);
-    return pfs_write_sectors(v, v->abuf_blk + k, 1, v->abuf + k * SEC);
+    if (k2 == k1) return pfs_write_sectors(v, v->abuf_blk + k1, 1, v->abuf + k1 * SEC);
+    /* Two writes: the sector holding blocknr goes first, so that a crash
+     * in between leaves the anode pointing at either the old or the new
+     * data, and the engine's journal recovery decides by blocknr which
+     * one and completes the other fields. */
+    kfirst  = (o + 4) / SEC;
+    ksecond = (kfirst == k1) ? k2 : k1;
+    if (!pfs_write_sectors(v, v->abuf_blk + kfirst, 1, v->abuf + kfirst * SEC)) return FALSE;
+    return pfs_write_sectors(v, v->abuf_blk + ksecond, 1, v->abuf + ksecond * SEC);
 }
 
 /* ------------------------------------------------------------------ */

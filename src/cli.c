@@ -228,7 +228,7 @@ struct FileList {
     struct PfsVol *v;
     ULONG  *dir_an; char **dir_path; ULONG ndirs, cap;
     BOOL    all;
-    ULONG   listed;
+    ULONG   listed, first_blk;
 };
 
 static const char *dir_path_of(struct FileList *fl, ULONG an)
@@ -263,13 +263,18 @@ static BOOL files_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULONG
     }
     if (type == PFS_ST_FILE || type == PFS_ST_ROLLOVER) {
         ULONG a = anodenr, guard = 0, runs = 0, nblk = 0, cs, blk, next;
+        fl->first_blk = 0;
         while (a && guard++ < 1000000UL) {
             if (!pfs_get_anode(fl->v, a, &cs, &blk, &next)) break;
-            if (cs) { runs++; nblk += cs; }
+            if (cs) { if (!runs) fl->first_blk = blk; runs++; nblk += cs; }
             a = next;
         }
         if (runs > 1 || fl->all) {
-            outf("%6lu %8lu  %s%s\n", (unsigned long)runs, (unsigned long)nblk, dir_path_of(fl, parent), name);
+            if (AmiDefrag_Debug)
+                outf("%6lu %8lu  %s%s  [anode %lu first %lu]\n", (unsigned long)runs, (unsigned long)nblk,
+                     dir_path_of(fl, parent), name, (unsigned long)anodenr, (unsigned long)fl->first_blk);
+            else
+                outf("%6lu %8lu  %s%s\n", (unsigned long)runs, (unsigned long)nblk, dir_path_of(fl, parent), name);
             fl->listed++;
         }
     }

@@ -101,8 +101,10 @@ BOOL pfs_res_read(struct PfsVol *v, ULONG nr, UBYTE *buf);
 
 /* anodes */
 BOOL pfs_get_anode(struct PfsVol *v, ULONG anodenr, ULONG *cs, ULONG *blk, ULONG *next);
-/* Rewrite one anode in place: read-modify-write of the single 512-byte
- * sector that holds it (the one commit write of the engine). */
+/* Rewrite one anode in place: read-modify-write of the 512-byte sector
+ * that holds it (the commit write of the engine).  One anode per 512
+ * bytes of an anode block straddles a sector boundary and takes two
+ * writes, blocknr's sector first; see pfs_core.c. */
 BOOL pfs_set_anode(struct PfsVol *v, ULONG anodenr, ULONG cs, ULONG blk, ULONG next);
 
 /* data bitmap */
