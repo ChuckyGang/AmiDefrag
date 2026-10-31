@@ -53,6 +53,12 @@ BOOL AmiDefrag_Debug = FALSE;
 
 static int amidefrag_main(void);
 
+/* support/gcc8_a_support.s: swap to the given stack, call fn, swap back.
+ * Must not be done from C: with -fomit-frame-pointer the second
+ * StackSwap(&sss) would address sss relative to the NEW stack pointer. */
+extern LONG RunOnStack(struct StackSwapStruct *sss, LONG (*fn)(void));
+static LONG run_main(void) { return amidefrag_main(); }
+
 static ULONG stack_used(const UBYTE *lower, ULONG size)
 {
     ULONG i;
@@ -74,9 +80,7 @@ int main(void)
     sss.stk_Lower   = stk;
     sss.stk_Upper   = (ULONG)(stk + OWN_STACK_SIZE);
     sss.stk_Pointer = (APTR)sss.stk_Upper;
-    StackSwap(&sss);
-    rc = amidefrag_main();
-    StackSwap(&sss);
+    rc = (int)RunOnStack(&sss, run_main);
     if (AmiDefrag_Debug) {
         struct DosLibrary *dl = (struct DosLibrary *)OpenLibrary("dos.library", 37);
         if (dl) {

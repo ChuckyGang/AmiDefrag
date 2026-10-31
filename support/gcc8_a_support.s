@@ -192,3 +192,31 @@ PutChar:
 	rts
 	.cfi_endproc
 	.size PutChar, .-PutChar
+
+/* LONG RunOnStack(struct StackSwapStruct *sss, LONG (*fn)(void));
+ * Swap to the stack described by sss, call fn, swap back, return fn's
+ * result.  Done in assembly because C code with -fomit-frame-pointer
+ * addresses its locals relative to sp, which is the NEW stack after the
+ * first StackSwap: the second StackSwap(&sss) would then read garbage
+ * and restore a bogus stack pointer (crash at exit, 2026-10-31). */
+	.section .text.RunOnStack,"ax",@progbits
+	.type RunOnStack, function
+	.globl	RunOnStack
+RunOnStack:
+	.cfi_startproc
+	moveml	d2/a2/a3/a6, sp@-
+	movel	sp@(20), a2		/* sss */
+	movel	sp@(24), a3		/* fn */
+	movel	4.w, a6
+	movel	a2, a0
+	jsr	a6@(-732)		/* StackSwap: now on the new stack */
+	jsr	a3@
+	movel	d0, d2
+	movel	4.w, a6
+	movel	a2, a0
+	jsr	a6@(-732)		/* StackSwap back: sp is the old one again */
+	movel	d2, d0
+	moveml	sp@+, d2/a2/a3/a6
+	rts
+	.cfi_endproc
+	.size RunOnStack, .-RunOnStack
