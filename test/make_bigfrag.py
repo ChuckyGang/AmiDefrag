@@ -135,19 +135,6 @@ def rm_retry(path, isdir=False):
             time.sleep(0.2)
     return False
 
-def cleanup_known(mnt, gaps, dirs):
-    """In-session cleanup by the names we created, no directory listing:
-    amifuse's readdir (Examine/ExNext) never returns on 1 GB PFS3 volumes
-    although create, Lock and Delete work, so listdir would see nothing."""
-    failed = 0
-    if not rm_retry(os.path.join(mnt, "zz_tail")): failed += 1
-    for i, p in enumerate(gaps):
-        if not rm_retry(p): failed += 1
-        if (i + 1) % 10000 == 0: log(f"cleanup: {i + 1}/{len(gaps)} gap files, {failed} failures")
-    for d in range(dirs):
-        if not rm_retry(os.path.join(mnt, f"sieve{d:04d}"), isdir=True): failed += 1
-    return failed
-
 def cleanup_fillers(mnt):
     """--cleanup-only: delete the tail filler, every file left in the sieve
     directories and the directories themselves, by listing them. Works for
