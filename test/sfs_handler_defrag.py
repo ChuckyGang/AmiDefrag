@@ -132,6 +132,23 @@ def main():
     mem = bridge.mem
     alloc = bridge.vh.alloc
 
+    # ---- handler stack high-water mark ----
+    # amifuse gives the handler 32 KB; Kickstart + uaehf give it 4000 bytes.
+    # Fill the idle part of the stack with a pattern and watch how deep the
+    # handler goes during the run (the defragmenter runs on this stack).
+    stk = bridge.state.stack
+    stk_lo, stk_hi = stk.get_lower(), stk.get_upper()
+    fill_top = (bridge.state.sp or stk_hi) - 256
+    mem.w_block(stk_lo, b"\xa5" * (fill_top - stk_lo))
+
+    def stack_peak():
+        data = bytes(mem.r_block(stk_lo, fill_top - stk_lo))
+        i = 0
+        while i < len(data) and data[i] == 0xA5:
+            i += 1
+        return stk_hi - (stk_lo + i)
+    log(f"handler stack {stk_hi - stk_lo} bytes, {stk_hi - bridge.state.sp} used while idle")
+
     def dopkt(typ, pargs):
         with bridge._lock:
             bridge.launcher.send_packet(bridge.state, typ, pargs)
@@ -154,6 +171,7 @@ def main():
         total = mem.r32(tagmem.addr + 12)
         bsize = mem.r32(tagmem.addr + 20)
         log(f"handler SmartFilesystem {version >> 16}.{version & 0xFFFF}, {total} blocks of {bsize} bytes")
+        log(f"stack peak after QUERY: {stack_peak()} bytes")
 
         # ---- bitmap before ----
         bmbytes = total // 8 + 32
@@ -178,6 +196,7 @@ def main():
         res1, res2 = dopkt(ACTION_SFS_DEFRAGMENT_INIT, [])
         if res1 == 0:
             raise SystemExit(f"ACTION_SFS_DEFRAGMENT_INIT failed, res2={res2}")
+        log(f"stack peak after INIT: {stack_peak()} bytes")
         stepmem = alloc.alloc_memory((STEP_LONGS + STEP_SLACK) * 4, label="sfs_steps")
         steps = moves = moved = 0
         empty = 0
@@ -226,7 +245,7 @@ def main():
             now = time.time()
             if now - last >= 10:
                 last = now
-                log(f"{steps} steps, {moves} moves, {moved} blocks ({moved * bsize // 1048576} MB), {empty} empty steps, {bad} odd moves")
+                log(f"{steps} steps, {moves} moves, {moved} blocks ({moved * bsize // 1048576} MB), {empty} empty steps, {bad} odd moves, stack peak {stack_peak()}")
         secs = time.time() - t0
         log(f"{'DONE' if done else 'stopped'}: {steps} steps, {moves} moves, {moved} blocks "
             f"({moved * bsize // 1048576} MB) in {secs:.0f} s, {empty} empty steps, {bad} odd moves")
@@ -240,7 +259,9 @@ def main():
         free1 = sum(bin(b).count("1") for b in after[:nb])
         log(f"bitmap after: {free1} free blocks; replayed MOVEs differ from it in {diff} block(s)")
 
+        log(f"stack peak after the run: {stack_peak()} bytes")
         dopkt(ACTION_FLUSH, [])
+        log(f"stack peak after FLUSH: {stack_peak()} bytes")
     finally:
         ff._cleanup_bridge(bridge, Path(temp_driver) if temp_driver else None)
 
