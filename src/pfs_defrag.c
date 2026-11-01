@@ -67,9 +67,11 @@ struct Eng {
     struct Piece *pieces;
     ULONG  pieces_cap;
     BOOL   writes_begun;
-    /* run table (consolidation) */
+    /* run table (consolidation): collected flat and sorted, then kept as
+     * a chunked array so the updates of the room-making pass are cheap */
     struct TPiece *tab;
     ULONG  tab_n, tab_cap;
+    struct Carr tabc;
     BOOL   tab_ok;
     /* files pass 1 found no run for: anodenr, nblk pairs */
     struct UStack later;
@@ -194,35 +196,33 @@ static void tab_sort(struct Eng *e)
     for (i = n - 1; i > 0; i--) { struct TPiece tmp = t[0]; t[0] = t[i]; t[i] = tmp; tab_sift(t, 0, i); }
 }
 
-/* index of the entry whose run covers blk, or -1 */
-static LONG tab_find(const struct Eng *e, ULONG blk)
+/* the flat, sorted collection becomes the chunked table */
+static void tab_build(struct Eng *e)
 {
-    ULONG lo = 0, hi = e->tab_n;
-    if (!e->tab_ok || e->tab_n == 0) return -1;
-    while (lo < hi) {                                /* first entry with .blk > blk */
-        ULONG mid = (lo + hi) / 2;
-        if (e->tab[mid].blk <= blk) lo = mid + 1; else hi = mid;
-    }
-    if (lo == 0) return -1;
-    lo--;
-    return blk < e->tab[lo].blk + TP_CS(e->tab[lo].cs) ? (LONG)lo : -1;
+    if (!e->tab_ok) return;
+    tab_sort(e);
+    if (!carr_build(&e->tabc, e->tab, e->tab_n)) e->tab_ok = FALSE;
+    if (e->tab) FreeVec(e->tab);
+    e->tab = NULL; e->tab_n = 0; e->tab_cap = 0;
 }
 
-static void tab_remove(struct Eng *e, LONG idx)
+/* the entry whose run covers blk (its position in *p), or NULL */
+static struct TPiece *tab_find(struct Eng *e, ULONG blk, struct CarrPos *p)
 {
-    if (idx < 0 || (ULONG)idx >= e->tab_n) return;
-    memmove(&e->tab[idx], &e->tab[idx + 1], (e->tab_n - idx - 1) * sizeof(struct TPiece));
-    e->tab_n--;
+    struct TPiece *t;
+    if (!e->tab_ok || !carr_find(&e->tabc, blk, p)) return NULL;
+    t = (struct TPiece *)carr_at(&e->tabc, p);
+    return t && blk < t->blk + TP_CS(t->cs) ? t : NULL;
 }
 
 static void tab_insert(struct Eng *e, ULONG blk, ULONG cs, ULONG an)
 {
-    ULONG lo = 0, hi = e->tab_n;
-    if (!e->tab_ok || !tab_reserve(e, e->tab_n + 1)) return;
-    while (lo < hi) { ULONG mid = (lo + hi) / 2; if (e->tab[mid].blk < blk) lo = mid + 1; else hi = mid; }
-    memmove(&e->tab[lo + 1], &e->tab[lo], (e->tab_n - lo) * sizeof(struct TPiece));
-    e->tab[lo].blk = blk; e->tab[lo].cs = cs; e->tab[lo].an = an;
-    e->tab_n++;
+    struct CarrPos p;
+    struct TPiece t;
+    if (!e->tab_ok) return;
+    if (carr_find(&e->tabc, blk, &p)) carr_next(&e->tabc, &p);   /* after the last entry at or before blk */
+    t.blk = blk; t.cs = cs; t.an = an;
+    if (!carr_insert(&e->tabc, &p, &t)) e->tab_ok = FALSE;
 }
 
 /* a run moved: drop the old entries, add the new one */
@@ -231,10 +231,11 @@ static void tab_moved(struct Eng *e, ULONG first, ULONG n, ULONG dest, ULONG nbl
     ULONG i;
     if (!e->tab_ok) return;
     for (i = first; i < first + n; i++) {
-        LONG idx;
+        struct CarrPos p;
+        const struct TPiece *t;
         if (!e->pieces[i].cs) continue;
-        idx = tab_find(e, e->pieces[i].blk);
-        if (idx >= 0 && e->tab[idx].blk == e->pieces[i].blk && e->tab[idx].an == e->pieces[i].an) tab_remove(e, idx);
+        t = tab_find(e, e->pieces[i].blk, &p);
+        if (t && t->blk == e->pieces[i].blk && t->an == e->pieces[i].an) carr_remove(&e->tabc, &p);
     }
     tab_insert(e, dest, nblk | flags, e->pieces[first].an);
 }
@@ -513,11 +514,12 @@ static BOOL move_pieces(struct Eng *e, ULONG first, ULONG n, ULONG next_after, U
 static LONG evict_at(struct Eng *e, ULONG blk, ULONG ex_lo, ULONG ex_hi, BOOL right)
 {
     struct PfsVol *v = &e->v;
-    LONG idx = tab_find(e, blk);
+    struct CarrPos p;
+    const struct TPiece *tp = tab_find(e, blk, &p);
     ULONG cs, acs, ablk, anext, dest, flags;
     struct TPiece t;
-    if (idx < 0) return 0;
-    t = e->tab[idx];
+    if (!tp) return 0;
+    t = *tp;
     if (t.cs & TP_FIXED) return 0;
     cs = TP_CS(t.cs); flags = t.cs & TP_FLAGS;
     if (cs == 0 || (right && t.blk != blk) || (!right && t.blk + cs - 1 != blk)) return 0;
@@ -688,6 +690,7 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     e->err = err; e->errlen = errlen;
     e->pf = pf; e->jext = pf->journal_io != NULL;
     e->tab_ok = TRUE;
+    carr_init(&e->tabc, sizeof(struct TPiece), 256, NULL);
 
     if (!opts->dry_run) {
         if (!pf->create_journal(pf->ud, vi, PFS_JOURNAL_BYTES, err, errlen)) goto done;
@@ -732,8 +735,8 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     if (stats->candidates == 0) { rc = RETURN_WARN; goto done; }
 
     if (!opts->dry_run) BlockDev_ArmWrites(bd);
-    if (e->tab_ok) tab_sort(e);
-    else elog(e, "Not enough memory for the run table: files without a free run stay as they are");
+    tab_build(e);
+    if (!e->tab_ok) elog(e, "Not enough memory for the run table: files without a free run stay as they are");
 
     /* pass 1: every file with a free run large enough */
     for (i = 0; i < e->cands.n; i++) {
@@ -785,6 +788,7 @@ done:
     ustack_free(&e->cands);
     ustack_free(&e->later);
     if (e->tab) FreeVec(e->tab);
+    carr_free(&e->tabc);
     if (inhibited) pf->inhibit(pf->ud, vi, FALSE, NULL, 0);
     if (journal_made && journal_checked && !stats->needs_validation) pf->delete_journal(pf->ud, vi);
     FreeVec(e);

@@ -34,6 +34,7 @@
 #include "blockdev.h"
 #include "volume.h"
 #include "fsmap.h"
+#include "carr.h"
 
 #define PFS_ID_DB 0x4442
 #define PFS_ID_AB 0x4142
@@ -88,12 +89,13 @@ struct PfsVol {
     ULONG  free_blocks;        /* counted from the bitmap */
     /* free-run index: the bitmap's free runs sorted by start (absolute
      * sectors), kept in step with every bit change, so the finders walk
-     * tens of thousands of runs instead of millions of bits.  NULL when it
-     * could not be built or kept (out of memory): the finders then scan
-     * the bitmap.  Only an accelerator - a run it returns is checked
+     * tens of thousands of runs instead of millions of bits.  A chunked
+     * array (carr.h) with a size-class mask per chunk, so updates and
+     * best-fit searches do not touch the whole list.  runs.ok is FALSE when
+     * it could not be built or kept (out of memory): the finders then
+     * scan the bitmap.  Only an accelerator - a run it returns is checked
      * against the bits before use. */
-    struct PfsRun *runs;
-    ULONG  nruns, runs_cap;
+    struct Carr runs;          /* of struct PfsRun; runs.ok = index available */
     /* progress callback for long loops (may be NULL) */
     FsMapProgress cb;
     void *cb_ud;

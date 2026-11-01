@@ -126,7 +126,12 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   moves twice, and smaller files go first so the holes they leave merge
   for the larger ones. Runs that fit nowhere are not split, so a nearly
   full disk can still end with a few fragmented files; those are
-  reported as skipped. Verified by `test/pfsfuzz.py`:
+  reported as skipped. The pass keeps two in-memory tables, every data
+  run on the volume and every free run of the bitmap, as chunked sorted
+  arrays (`src/carr.c`) with a size-class mask per chunk, so each of the
+  tens of thousands of updates and best-fit searches touches a few KB
+  instead of the whole table (as flat arrays that was hours of 68000
+  time on the 1 GB torture image). Verified by `test/pfsfuzz.py`:
   images filled through the real pfs3aio handler (amifuse handler
   bridge), every file re-read through the handler after clean runs and
   after crash / torn-sector replays aimed at the metadata writes, zero
@@ -144,6 +149,7 @@ python3 test/ffsfuzz.py 10   # FFS engine fuzz loop with crash replay (needs xdf
 test/make_bigfrag.py --fs ffs   # 1 GB torture image (also pfs3 / sfs), see below
 test/sfs_handler_defrag.py IMG --partition FRG2   # SFS engine check through amifuse (see file)
 python3 test/pfsfuzz.py 10              # PFS3 engine fuzz loop through the real pfs3aio (needs amifuse)
+make -C host check-index                # PFS3 bitmap setter + free-run index randomized check (plain gcc)
 test/pfs_bigcheck.py IMG --partition FRG1   # PFS3 engine on a copy of a big image, handler-verified
 ```
 
@@ -251,13 +257,13 @@ deleted on the Amiga; `--cleanup-only` handles FFS and SFS.
 src/        shared core: blockdev (read-only I/O), volume (DosList / RDB),
             fsmap (map model), ffs_map / pfs_map / sfs_map (parsers),
             ffs_core + ffs_defrag (FFS engine), pfs_core + pfs_defrag (PFS3
-            engine), sfs_defrag (SFS via handler),
+            engine), carr (chunked sorted array), sfs_defrag (SFS via handler),
             cli (ReadArgs mode), gui (GadTools window), main
 host/       Linux build: amiga_compat.h, amiga_shim.c, host_rdargs.c, host_main.c,
             host_platform.c (sidecar journal), gui_gtk.c (GTK3 window)
 support/    Bartman runtime support, icon generator, LHA packer
 test/       make_testdisk.sh, make_bigfrag.py, ffsfuzz.py, pfsfuzz.py,
-            pfs_bigcheck.py, sfs_handler_defrag.py
+            pfs_bigcheck.py, sfs_handler_defrag.py, runidx_test.c
             (images are generated, not committed)
 ```
 

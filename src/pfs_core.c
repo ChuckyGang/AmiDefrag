@@ -119,7 +119,7 @@ void pfs_close(struct PfsVol *v)
 {
     if (v->root) FreeVec(v->root);
     if (v->bm) FreeVec(v->bm);
-    if (v->runs) FreeVec(v->runs);
+    carr_free(&v->runs);
     if (v->bmb_key) FreeVec(v->bmb_key);
     if (v->bmb_dirty) FreeVec(v->bmb_dirty);
     v->root = NULL; v->bm = NULL; v->bmb_key = NULL; v->bmb_dirty = NULL;
@@ -272,8 +272,7 @@ BOOL pfs_bm_load(struct PfsVol *v)
 
 static void runs_drop(struct PfsVol *v)
 {
-    if (v->runs) FreeVec(v->runs);
-    v->runs = NULL; v->nruns = 0; v->runs_cap = 0;
+    carr_free(&v->runs);
 }
 
 /* collect the free runs of the RAM bitmap: pass 1 counts, pass 2 fills */
@@ -296,68 +295,76 @@ static ULONG runs_collect(const struct PfsVol *v, struct PfsRun *out, ULONG cap)
     return n;
 }
 
+/* Size classes of a run length, one bit each in a chunk's tag: exact for
+ * 1..16 (bits 0..15), then doubling ranges 17-31, 32-63, 64-127, ... up
+ * to bit 31 for 524288 and more.  A best-fit search looks at the lowest
+ * class that can hold the request and only in chunks whose tag has it. */
+static ULONG run_class(ULONG len)
+{
+    ULONG c = 16;
+    if (len == 0) return 0;
+    if (len <= 16) return len - 1;
+    for (len >>= 5; len && c < 31; len >>= 1) c++;
+    return c;
+}
+
+static void class_bounds(ULONG c, ULONG *lo, ULONG *hi)
+{
+    if (c < 16) { *lo = *hi = c + 1; return; }
+    if (c == 16) { *lo = 17; *hi = 31; return; }
+    *lo = 1UL << (c - 12);
+    *hi = c == 31 ? 0xFFFFFFFFUL : (*lo << 1) - 1;
+}
+
+static ULONG run_tag(const void *recs, ULONG n)
+{
+    const struct PfsRun *r = (const struct PfsRun *)recs;
+    ULONG i, t = 0;
+    for (i = 0; i < n; i++) t |= 1UL << run_class(r[i].len);
+    return t;
+}
+
 static void runs_build(struct PfsVol *v)
 {
+    struct PfsRun *tmp;
     ULONG n;
     runs_drop(v);
+    carr_init(&v->runs, sizeof(struct PfsRun), 128, run_tag);
 #ifdef AMIDEFRAG_HOST
     if (getenv("AMIDEFRAG_NO_RUNINDEX")) return;      /* test knob: exercise the bitmap scans */
 #endif
     n = runs_collect(v, NULL, 0);
-    v->runs_cap = n + 1024;
-    v->runs = (struct PfsRun *)AllocVec(v->runs_cap * sizeof(struct PfsRun), MEMF_PUBLIC);
-    if (!v->runs) { v->runs_cap = 0; return; }
-    v->nruns = runs_collect(v, v->runs, v->runs_cap);
-}
-
-/* index of the last run starting at or before sector, -1 if none */
-static LONG runs_find(const struct PfsVol *v, ULONG sector)
-{
-    ULONG lo = 0, hi = v->nruns;
-    while (lo < hi) { ULONG mid = (lo + hi) / 2; if (v->runs[mid].start <= sector) lo = mid + 1; else hi = mid; }
-    return (LONG)lo - 1;
-}
-
-static void runs_remove(struct PfsVol *v, ULONG idx)
-{
-    memmove(&v->runs[idx], &v->runs[idx + 1], (v->nruns - idx - 1) * sizeof(struct PfsRun));
-    v->nruns--;
-}
-
-static BOOL runs_insert(struct PfsVol *v, ULONG idx, ULONG start, ULONG len)
-{
-    if (v->nruns == v->runs_cap) {
-        ULONG cap = v->runs_cap * 2;
-        struct PfsRun *r = (struct PfsRun *)AllocVec(cap * sizeof(struct PfsRun), MEMF_PUBLIC);
-        if (!r) { runs_drop(v); return FALSE; }          /* index gone: finders scan the bitmap */
-        memcpy(r, v->runs, v->nruns * sizeof(struct PfsRun));
-        FreeVec(v->runs);
-        v->runs = r; v->runs_cap = cap;
-    }
-    memmove(&v->runs[idx + 1], &v->runs[idx], (v->nruns - idx) * sizeof(struct PfsRun));
-    v->runs[idx].start = start; v->runs[idx].len = len;
-    v->nruns++;
-    return TRUE;
+    tmp = (struct PfsRun *)AllocVec((n + 1) * sizeof(struct PfsRun), MEMF_PUBLIC);
+    if (!tmp) return;
+    n = runs_collect(v, tmp, n);
+    carr_build(&v->runs, tmp, n);
+    FreeVec(tmp);
 }
 
 /* take [s, e) out of every run it overlaps (sectors became used) */
 static void runs_cut(struct PfsVol *v, ULONG s, ULONG e)
 {
-    LONG i;
-    if (!v->runs) return;
-    i = runs_find(v, s);
-    if (i < 0) i = 0;
-    while ((ULONG)i < v->nruns && v->runs[i].start < e) {
-        ULONG rs = v->runs[i].start, re = rs + v->runs[i].len;
-        if (re <= s) { i++; continue; }
-        if (rs >= s && re <= e) { runs_remove(v, (ULONG)i); continue; }
+    struct Carr *a = &v->runs;
+    struct CarrPos p;
+    struct PfsRun *r;
+    if (!a->ok) return;
+    carr_find(a, s, &p);                              /* last run starting at or before s, else the first */
+    while ((r = (struct PfsRun *)carr_at(a, &p)) != NULL && r->start < e) {
+        ULONG rs = r->start, re = rs + r->len;
+        if (re <= s) { carr_next(a, &p); continue; }
+        if (rs >= s && re <= e) { carr_remove(a, &p); continue; }
         if (rs < s && re > e) {                           /* split */
-            v->runs[i].len = s - rs;
-            if (!runs_insert(v, (ULONG)i + 1, e, re - e)) return;
+            struct PfsRun nr;
+            r->len = s - rs;
+            carr_touched(a, p.ci);
+            nr.start = e; nr.len = re - e;
+            carr_next(a, &p);
+            if (!carr_insert(a, &p, &nr)) runs_drop(v);   /* out of memory: finders scan the bitmap */
             return;
         }
-        if (rs < s) { v->runs[i].len = s - rs; i++; continue; }
-        v->runs[i].start = e; v->runs[i].len = re - e;    /* rs >= s, re > e */
+        if (rs < s) { r->len = s - rs; carr_touched(a, p.ci); carr_next(a, &p); continue; }
+        r->start = e; r->len = re - e;                    /* rs >= s, re > e */
+        carr_touched(a, p.ci);
         return;
     }
 }
@@ -365,24 +372,30 @@ static void runs_cut(struct PfsVol *v, ULONG s, ULONG e)
 /* [s, e) became free: merge with the neighbours or insert */
 static void runs_add(struct PfsVol *v, ULONG s, ULONG e)
 {
-    LONG i;
-    if (!v->runs) return;
+    struct Carr *a = &v->runs;
+    struct CarrPos p, q;
+    struct PfsRun *r, *r2, nr;
+    if (!a->ok) return;
     runs_cut(v, s, e);
-    if (!v->runs) return;
-    i = runs_find(v, s);
-    if (i >= 0 && v->runs[i].start + v->runs[i].len == s) {
-        v->runs[i].len = e - v->runs[i].start;
-        if ((ULONG)i + 1 < v->nruns && v->runs[i + 1].start == e) {
-            v->runs[i].len += v->runs[i + 1].len;
-            runs_remove(v, (ULONG)i + 1);
+    if (!a->ok) return;
+    if (carr_find(a, s, &p)) {
+        r = (struct PfsRun *)carr_at(a, &p);
+        if (r->start + r->len == s) {                     /* extends the run before */
+            r->len = e - r->start;
+            q = p;
+            if (carr_next(a, &q) && (r2 = (struct PfsRun *)carr_at(a, &q)) != NULL && r2->start == e) {
+                r->len += r2->len;
+                carr_touched(a, p.ci);
+                carr_remove(a, &q);
+            } else carr_touched(a, p.ci);
+            return;
         }
-        return;
+        carr_next(a, &p);
     }
-    if ((ULONG)(i + 1) < v->nruns && v->runs[i + 1].start == e) {
-        v->runs[i + 1].start = s; v->runs[i + 1].len += e - s;
-        return;
-    }
-    runs_insert(v, (ULONG)(i + 1), s, e - s);
+    r = (struct PfsRun *)carr_at(a, &p);                 /* first run starting after s, or the end */
+    if (r && r->start == e) { r->start = s; r->len += e - s; carr_touched(a, p.ci); return; }
+    nr.start = s; nr.len = e - s;
+    if (!carr_insert(a, &p, &nr)) runs_drop(v);
 }
 
 BOOL pfs_bm_isfree(const struct PfsVol *v, ULONG sector)
@@ -393,28 +406,47 @@ BOOL pfs_bm_isfree(const struct PfsVol *v, ULONG sector)
     return (v->bm[idx >> 5] & (0x80000000UL >> (idx & 31))) != 0;
 }
 
-static void bm_set_bit(struct PfsVol *v, ULONG sector, BOOL isfree)
+/* long li of the RAM bitmap changed: its sector of its bitmap block is dirty */
+static void bm_dirty_long(struct PfsVol *v, ULONG li)
 {
-    ULONG idx, li, mask, bmb, j, k;
-    idx  = sector - v->bitmapstart;
-    li   = idx >> 5;
-    mask = 0x80000000UL >> (idx & 31);
-    if (isfree) { if (!(v->bm[li] & mask)) v->free_blocks++; v->bm[li] |= mask; }
-    else        { if (v->bm[li] & mask) v->free_blocks--;  v->bm[li] &= ~mask; }
-    bmb = li / v->longsperbmb;
-    j   = li % v->longsperbmb;
-    k   = (12 + 4 * j) / SEC;
+    ULONG bmb = li / v->longsperbmb, j = li % v->longsperbmb, k = (12 + 4 * j) / SEC;
     v->bmb_dirty[bmb] |= (UBYTE)(1 << k);
 }
 
+static ULONG popcount32(ULONG x)
+{
+    x = x - ((x >> 1) & 0x55555555UL);
+    x = (x & 0x33333333UL) + ((x >> 2) & 0x33333333UL);
+    x = (x + (x >> 4)) & 0x0F0F0F0FUL;
+    x += x >> 8;
+    x += x >> 16;
+    return x & 0x3F;
+}
+
+/* whole longs at a time: a file move marks a million bits on a big volume
+ * and the per-bit divisions for the dirty flags were minutes of 68000 time */
 void pfs_bm_set_range(struct PfsVol *v, ULONG sector, ULONG n, BOOL isfree)
 {
-    ULONG s, e;
+    ULONG s, e, i, end;
     if (sector >= v->disksize || n == 0) return;
     s = sector < v->bitmapstart ? v->bitmapstart : sector;
     e = sector + n > v->disksize || sector + n < sector ? v->disksize : sector + n;
     if (s >= e) return;
-    for (n = s; n < e; n++) bm_set_bit(v, n, isfree);
+    i = s - v->bitmapstart; end = e - v->bitmapstart;
+    while (i < end) {
+        ULONG li = i >> 5, b0 = i & 31, b1 = end - (li << 5), mask, old, nw, diff;
+        if (b1 > 32) b1 = 32;
+        mask = (0xFFFFFFFFUL >> b0) & ~(b1 < 32 ? 0xFFFFFFFFUL >> b1 : 0);   /* bits b0..b1-1, MSB first */
+        old = v->bm[li];
+        nw = isfree ? old | mask : old & ~mask;
+        diff = old ^ nw;
+        if (diff) {
+            if (isfree) v->free_blocks += popcount32(diff); else v->free_blocks -= popcount32(diff);
+            v->bm[li] = nw;
+            bm_dirty_long(v, li);
+        }
+        i = (li + 1) << 5;
+    }
     if (isfree) runs_add(v, s, e); else runs_cut(v, s, e);
 }
 
@@ -507,33 +539,63 @@ static BOOL run_is_free(struct PfsVol *v, ULONG start, ULONG len)
     return TRUE;
 }
 
+/* Best fit from the index: the lowest size class that can hold `need`,
+ * in the first chunk (lowest sectors) holding a run of that class with
+ * room outside the exclusion zone; within that chunk the smallest such
+ * run.  Exact for requests up to 16 sectors; above that the pick is
+ * within the class's factor of two of the best, which is what best fit
+ * is for (not spending a big hole on a small run). */
 static ULONG idx_find_run(struct PfsVol *v, ULONG need, ULONG ex_lo, ULONG ex_hi)
 {
-    ULONG i, best = 0, best_len = 0xFFFFFFFFUL;
-    for (i = 0; i < v->nruns && best_len != need; i++) {
-        ULONG rs = v->runs[i].start, re = rs + v->runs[i].len, a, b;
-        /* the part(s) of the run outside the exclusion zone */
-        if (ex_hi > ex_lo && rs < ex_hi && re > ex_lo) {
-            a = rs; b = ex_lo > rs ? ex_lo : rs;                     /* before the zone */
-            if (b - a >= need && b - a < best_len) { best = a; best_len = b - a; }
-            a = ex_hi < re ? ex_hi : re; b = re;                     /* after the zone */
-            if (b - a >= need && b - a < best_len) { best = a; best_len = b - a; }
-        } else if (re - rs >= need && re - rs < best_len) { best = rs; best_len = re - rs; }
+    const struct Carr *a = &v->runs;
+    ULONG c;
+    for (c = run_class(need); c < 32; c++) {
+        ULONG bit = 1UL << c, clo, chi, ci;
+        class_bounds(c, &clo, &chi);
+        for (ci = 0; ci < a->nch; ci++) {
+            const struct PfsRun *r = (const struct PfsRun *)a->ch[ci];
+            ULONG k, best = 0, best_len = 0xFFFFFFFFUL;
+            if (!(a->tag[ci] & bit)) continue;
+            for (k = 0; k < a->cnt[ci]; k++) {
+                ULONG rs = r[k].start, re = rs + r[k].len, p0, p1;
+                if (r[k].len < clo || r[k].len > chi) continue;
+                if (ex_hi > ex_lo && rs < ex_hi && re > ex_lo) {      /* the part(s) outside the zone */
+                    p0 = rs; p1 = ex_lo > rs ? ex_lo : rs;
+                    if (p1 - p0 >= need && p1 - p0 < best_len) { best = p0; best_len = p1 - p0; }
+                    p0 = ex_hi < re ? ex_hi : re; p1 = re;
+                    if (p1 - p0 >= need && p1 - p0 < best_len) { best = p0; best_len = p1 - p0; }
+                } else if (re - rs >= need && re - rs < best_len) { best = rs; best_len = re - rs; }
+                if (best_len == need) return best;
+            }
+            if (best_len != 0xFFFFFFFFUL) return best;
+        }
     }
-    return best_len != 0xFFFFFFFFUL ? best : 0;
+    return 0;
 }
 
+/* the largest run whose start is not in skip[]: highest class down */
 static ULONG idx_largest_run(struct PfsVol *v, const ULONG *skip, ULONG nskip, ULONG *len)
 {
-    ULONG i, best = 0, best_len = 0;
-    for (i = 0; i < v->nruns; i++) {
-        ULONG k; BOOL sk = FALSE;
-        if (v->runs[i].len <= best_len) continue;
-        for (k = 0; k < nskip; k++) if (skip[k] == v->runs[i].start) sk = TRUE;
-        if (!sk) { best = v->runs[i].start; best_len = v->runs[i].len; }
+    const struct Carr *a = &v->runs;
+    ULONG c = 32;
+    while (c-- > 0) {
+        ULONG bit = 1UL << c, clo, chi, ci, best = 0, best_len = 0;
+        class_bounds(c, &clo, &chi);
+        for (ci = 0; ci < a->nch; ci++) {
+            const struct PfsRun *r = (const struct PfsRun *)a->ch[ci];
+            ULONG k;
+            if (!(a->tag[ci] & bit)) continue;
+            for (k = 0; k < a->cnt[ci]; k++) {
+                ULONG j; BOOL sk = FALSE;
+                if (r[k].len < clo || r[k].len > chi || r[k].len <= best_len) continue;
+                for (j = 0; j < nskip; j++) if (skip[j] == r[k].start) sk = TRUE;
+                if (!sk) { best = r[k].start; best_len = r[k].len; }
+            }
+        }
+        if (best_len) { if (len) *len = best_len; return best; }
     }
-    if (len) *len = best_len;
-    return best_len ? best : 0;
+    if (len) *len = 0;
+    return 0;
 }
 
 ULONG pfs_bm_find_run_ex(const struct PfsVol *v0, ULONG need, ULONG ex_lo, ULONG ex_hi)
@@ -541,7 +603,7 @@ ULONG pfs_bm_find_run_ex(const struct PfsVol *v0, ULONG need, ULONG ex_lo, ULONG
     struct PfsVol *v = (struct PfsVol *)v0;
     int attempt;
     if (!v->bm_loaded || need == 0) return 0;
-    for (attempt = 0; v->runs && attempt < 2; attempt++) {
+    for (attempt = 0; v->runs.ok && attempt < 2; attempt++) {
         ULONG r = idx_find_run(v, need, ex_lo, ex_hi);
         if (r == 0 || run_is_free(v, r, need)) return r;
         if (attempt == 0) runs_build(v); else runs_drop(v);
@@ -559,7 +621,7 @@ ULONG pfs_bm_largest_run(const struct PfsVol *v0, const ULONG *skip, ULONG nskip
     struct PfsVol *v = (struct PfsVol *)v0;
     int attempt;
     if (!v->bm_loaded) return 0;
-    for (attempt = 0; v->runs && attempt < 2; attempt++) {
+    for (attempt = 0; v->runs.ok && attempt < 2; attempt++) {
         ULONG l = 0, r = idx_largest_run(v, skip, nskip, &l);
         if (r == 0 || run_is_free(v, r, l)) { if (len) *len = l; return r; }
         if (attempt == 0) runs_build(v); else runs_drop(v);
