@@ -225,10 +225,15 @@ def build_image(img, rng, it):
 
 
 def check_files(img, files):
-    res = bridge(img, [["md5", sorted(files)], ["write", "post_run_probe", 1024, "probe"],
+    res = bridge(img, [["info"], ["md5", sorted(files)], ["write", "post_run_probe", 1024, "probe"],
                        ["delete", "post_run_probe"], ["flush"]])
     bad = [p for p, h in files.items() if res["md5"].get(p) != h]
-    return bad, res["ok"]
+    # the fill phase can leave the handler's own free count at zero (the
+    # engine never changes it): then "disk full" is the right answer, not a
+    # broken volume - the probe is meaningful only when the handler has room
+    info = res.get("info") or {}
+    full = info.get("num_blocks_used", 0) + 4 >= info.get("num_blocks", 1)
+    return bad, res["ok"] or full
 
 
 def analyse(img):

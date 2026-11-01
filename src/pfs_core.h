@@ -61,6 +61,8 @@
 /* pseudo type the walker reports for deldir entries */
 #define PFS_ST_DELETED   (-100)
 
+struct PfsRun { ULONG start, len; };
+
 struct PfsVol {
     struct BlockDev *bd;
     ULONG part_start;          /* device block of partition sector 0 */
@@ -84,6 +86,14 @@ struct PfsVol {
     UBYTE *bmb_dirty;          /* per bitmap block: bit k = sector k dirty */
     BOOL   bm_loaded;
     ULONG  free_blocks;        /* counted from the bitmap */
+    /* free-run index: the bitmap's free runs sorted by start (absolute
+     * sectors), kept in step with every bit change, so the finders walk
+     * tens of thousands of runs instead of millions of bits.  NULL when it
+     * could not be built or kept (out of memory): the finders then scan
+     * the bitmap.  Only an accelerator - a run it returns is checked
+     * against the bits before use. */
+    struct PfsRun *runs;
+    ULONG  nruns, runs_cap;
     /* progress callback for long loops (may be NULL) */
     FsMapProgress cb;
     void *cb_ud;
@@ -111,6 +121,7 @@ BOOL pfs_set_anode(struct PfsVol *v, ULONG anodenr, ULONG cs, ULONG blk, ULONG n
 BOOL  pfs_bm_load(struct PfsVol *v);                    /* whole bitmap into RAM */
 BOOL  pfs_bm_isfree(const struct PfsVol *v, ULONG sector);
 void  pfs_bm_set(struct PfsVol *v, ULONG sector, BOOL isfree);   /* marks the sector dirty */
+void  pfs_bm_set_range(struct PfsVol *v, ULONG sector, ULONG n, BOOL isfree);
 BOOL  pfs_bm_flush(struct PfsVol *v);                   /* write dirty bitmap sectors */
 /* smallest free run of at least `need` sectors (best fit); 0 = none */
 ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need);

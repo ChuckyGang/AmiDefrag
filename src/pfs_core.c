@@ -12,6 +12,9 @@
  * anodenr first, name as a length-prefixed string at @14.
  */
 #include "fsmap_int.h"
+#ifdef AMIDEFRAG_HOST
+#include <stdlib.h>
+#endif
 #include "pfs_core.h"
 
 #define SEC 512UL
@@ -116,6 +119,7 @@ void pfs_close(struct PfsVol *v)
 {
     if (v->root) FreeVec(v->root);
     if (v->bm) FreeVec(v->bm);
+    if (v->runs) FreeVec(v->runs);
     if (v->bmb_key) FreeVec(v->bmb_key);
     if (v->bmb_dirty) FreeVec(v->bmb_dirty);
     v->root = NULL; v->bm = NULL; v->bmb_key = NULL; v->bmb_dirty = NULL;
@@ -208,6 +212,8 @@ BOOL pfs_set_anode(struct PfsVol *v, ULONG anodenr, ULONG cs, ULONG blk, ULONG n
 /* data bitmap                                                         */
 /* ------------------------------------------------------------------ */
 
+static void runs_build(struct PfsVol *v);
+
 BOOL pfs_bm_load(struct PfsVol *v)
 {
     ULONG nbits = v->disksize - v->bitmapstart;
@@ -256,7 +262,127 @@ BOOL pfs_bm_load(struct PfsVol *v)
     }
     v->ibuf_nr = 0xFFFFFFFFUL;       /* ibuf is shared with the anode index */
     v->bm_loaded = TRUE;
+    runs_build(v);
     return TRUE;
+}
+
+/* ------------------------------------------------------------------ */
+/* free-run index                                                      */
+/* ------------------------------------------------------------------ */
+
+static void runs_drop(struct PfsVol *v)
+{
+    if (v->runs) FreeVec(v->runs);
+    v->runs = NULL; v->nruns = 0; v->runs_cap = 0;
+}
+
+/* collect the free runs of the RAM bitmap: pass 1 counts, pass 2 fills */
+static ULONG runs_collect(const struct PfsVol *v, struct PfsRun *out, ULONG cap)
+{
+    ULONG span = v->disksize - v->bitmapstart, li, run_start = 0, run_len = 0, n = 0;
+#define EMIT() do { if (out && n < cap) { out[n].start = run_start + v->bitmapstart; out[n].len = run_len; } n++; run_len = 0; } while (0)
+    for (li = 0; li < v->bm_longs; li++) {
+        ULONG w = v->bm[li], base = li * 32, bit;
+        if (w == 0) { if (run_len) EMIT(); continue; }
+        if (w == 0xFFFFFFFFUL && base + 32 <= span) { if (run_len == 0) run_start = base; run_len += 32; continue; }
+        for (bit = 0; bit < 32; bit++) {
+            if (base + bit >= span) { if (run_len) EMIT(); break; }
+            if (w & (0x80000000UL >> bit)) { if (run_len == 0) run_start = base + bit; run_len++; }
+            else if (run_len) EMIT();
+        }
+    }
+    if (run_len) EMIT();
+#undef EMIT
+    return n;
+}
+
+static void runs_build(struct PfsVol *v)
+{
+    ULONG n;
+    runs_drop(v);
+#ifdef AMIDEFRAG_HOST
+    if (getenv("AMIDEFRAG_NO_RUNINDEX")) return;      /* test knob: exercise the bitmap scans */
+#endif
+    n = runs_collect(v, NULL, 0);
+    v->runs_cap = n + 1024;
+    v->runs = (struct PfsRun *)AllocVec(v->runs_cap * sizeof(struct PfsRun), MEMF_PUBLIC);
+    if (!v->runs) { v->runs_cap = 0; return; }
+    v->nruns = runs_collect(v, v->runs, v->runs_cap);
+}
+
+/* index of the last run starting at or before sector, -1 if none */
+static LONG runs_find(const struct PfsVol *v, ULONG sector)
+{
+    ULONG lo = 0, hi = v->nruns;
+    while (lo < hi) { ULONG mid = (lo + hi) / 2; if (v->runs[mid].start <= sector) lo = mid + 1; else hi = mid; }
+    return (LONG)lo - 1;
+}
+
+static void runs_remove(struct PfsVol *v, ULONG idx)
+{
+    memmove(&v->runs[idx], &v->runs[idx + 1], (v->nruns - idx - 1) * sizeof(struct PfsRun));
+    v->nruns--;
+}
+
+static BOOL runs_insert(struct PfsVol *v, ULONG idx, ULONG start, ULONG len)
+{
+    if (v->nruns == v->runs_cap) {
+        ULONG cap = v->runs_cap * 2;
+        struct PfsRun *r = (struct PfsRun *)AllocVec(cap * sizeof(struct PfsRun), MEMF_PUBLIC);
+        if (!r) { runs_drop(v); return FALSE; }          /* index gone: finders scan the bitmap */
+        memcpy(r, v->runs, v->nruns * sizeof(struct PfsRun));
+        FreeVec(v->runs);
+        v->runs = r; v->runs_cap = cap;
+    }
+    memmove(&v->runs[idx + 1], &v->runs[idx], (v->nruns - idx) * sizeof(struct PfsRun));
+    v->runs[idx].start = start; v->runs[idx].len = len;
+    v->nruns++;
+    return TRUE;
+}
+
+/* take [s, e) out of every run it overlaps (sectors became used) */
+static void runs_cut(struct PfsVol *v, ULONG s, ULONG e)
+{
+    LONG i;
+    if (!v->runs) return;
+    i = runs_find(v, s);
+    if (i < 0) i = 0;
+    while ((ULONG)i < v->nruns && v->runs[i].start < e) {
+        ULONG rs = v->runs[i].start, re = rs + v->runs[i].len;
+        if (re <= s) { i++; continue; }
+        if (rs >= s && re <= e) { runs_remove(v, (ULONG)i); continue; }
+        if (rs < s && re > e) {                           /* split */
+            v->runs[i].len = s - rs;
+            if (!runs_insert(v, (ULONG)i + 1, e, re - e)) return;
+            return;
+        }
+        if (rs < s) { v->runs[i].len = s - rs; i++; continue; }
+        v->runs[i].start = e; v->runs[i].len = re - e;    /* rs >= s, re > e */
+        return;
+    }
+}
+
+/* [s, e) became free: merge with the neighbours or insert */
+static void runs_add(struct PfsVol *v, ULONG s, ULONG e)
+{
+    LONG i;
+    if (!v->runs) return;
+    runs_cut(v, s, e);
+    if (!v->runs) return;
+    i = runs_find(v, s);
+    if (i >= 0 && v->runs[i].start + v->runs[i].len == s) {
+        v->runs[i].len = e - v->runs[i].start;
+        if ((ULONG)i + 1 < v->nruns && v->runs[i + 1].start == e) {
+            v->runs[i].len += v->runs[i + 1].len;
+            runs_remove(v, (ULONG)i + 1);
+        }
+        return;
+    }
+    if ((ULONG)(i + 1) < v->nruns && v->runs[i + 1].start == e) {
+        v->runs[i + 1].start = s; v->runs[i + 1].len += e - s;
+        return;
+    }
+    runs_insert(v, (ULONG)(i + 1), s, e - s);
 }
 
 BOOL pfs_bm_isfree(const struct PfsVol *v, ULONG sector)
@@ -267,10 +393,9 @@ BOOL pfs_bm_isfree(const struct PfsVol *v, ULONG sector)
     return (v->bm[idx >> 5] & (0x80000000UL >> (idx & 31))) != 0;
 }
 
-void pfs_bm_set(struct PfsVol *v, ULONG sector, BOOL isfree)
+static void bm_set_bit(struct PfsVol *v, ULONG sector, BOOL isfree)
 {
     ULONG idx, li, mask, bmb, j, k;
-    if (sector < v->bitmapstart || sector >= v->disksize) return;
     idx  = sector - v->bitmapstart;
     li   = idx >> 5;
     mask = 0x80000000UL >> (idx & 31);
@@ -280,6 +405,22 @@ void pfs_bm_set(struct PfsVol *v, ULONG sector, BOOL isfree)
     j   = li % v->longsperbmb;
     k   = (12 + 4 * j) / SEC;
     v->bmb_dirty[bmb] |= (UBYTE)(1 << k);
+}
+
+void pfs_bm_set_range(struct PfsVol *v, ULONG sector, ULONG n, BOOL isfree)
+{
+    ULONG s, e;
+    if (sector >= v->disksize || n == 0) return;
+    s = sector < v->bitmapstart ? v->bitmapstart : sector;
+    e = sector + n > v->disksize || sector + n < sector ? v->disksize : sector + n;
+    if (s >= e) return;
+    for (n = s; n < e; n++) bm_set_bit(v, n, isfree);
+    if (isfree) runs_add(v, s, e); else runs_cut(v, s, e);
+}
+
+void pfs_bm_set(struct PfsVol *v, ULONG sector, BOOL isfree)
+{
+    pfs_bm_set_range(v, sector, 1, isfree);
 }
 
 BOOL pfs_bm_flush(struct PfsVol *v)
@@ -356,18 +497,73 @@ static ULONG bm_scan(const struct PfsVol *v, int mode, ULONG need, ULONG ex_lo, 
     return best_len ? best + v->bitmapstart : 0;
 }
 
-ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need)
+/* the run the index picked must really be free; if not, the index is
+ * wrong: rebuild it once, and if that does not help drop it */
+static BOOL run_is_free(struct PfsVol *v, ULONG start, ULONG len)
 {
-    return bm_scan(v, 0, need, 0, 0, NULL, 0, NULL);
+    ULONG s;
+    if (start < v->bitmapstart || start + len > v->disksize || start + len < start) return FALSE;
+    for (s = start; s < start + len; s++) if (!pfs_bm_isfree(v, s)) return FALSE;
+    return TRUE;
 }
 
-ULONG pfs_bm_find_run_ex(const struct PfsVol *v, ULONG need, ULONG ex_lo, ULONG ex_hi)
+static ULONG idx_find_run(struct PfsVol *v, ULONG need, ULONG ex_lo, ULONG ex_hi)
 {
+    ULONG i, best = 0, best_len = 0xFFFFFFFFUL;
+    for (i = 0; i < v->nruns && best_len != need; i++) {
+        ULONG rs = v->runs[i].start, re = rs + v->runs[i].len, a, b;
+        /* the part(s) of the run outside the exclusion zone */
+        if (ex_hi > ex_lo && rs < ex_hi && re > ex_lo) {
+            a = rs; b = ex_lo > rs ? ex_lo : rs;                     /* before the zone */
+            if (b - a >= need && b - a < best_len) { best = a; best_len = b - a; }
+            a = ex_hi < re ? ex_hi : re; b = re;                     /* after the zone */
+            if (b - a >= need && b - a < best_len) { best = a; best_len = b - a; }
+        } else if (re - rs >= need && re - rs < best_len) { best = rs; best_len = re - rs; }
+    }
+    return best_len != 0xFFFFFFFFUL ? best : 0;
+}
+
+static ULONG idx_largest_run(struct PfsVol *v, const ULONG *skip, ULONG nskip, ULONG *len)
+{
+    ULONG i, best = 0, best_len = 0;
+    for (i = 0; i < v->nruns; i++) {
+        ULONG k; BOOL sk = FALSE;
+        if (v->runs[i].len <= best_len) continue;
+        for (k = 0; k < nskip; k++) if (skip[k] == v->runs[i].start) sk = TRUE;
+        if (!sk) { best = v->runs[i].start; best_len = v->runs[i].len; }
+    }
+    if (len) *len = best_len;
+    return best_len ? best : 0;
+}
+
+ULONG pfs_bm_find_run_ex(const struct PfsVol *v0, ULONG need, ULONG ex_lo, ULONG ex_hi)
+{
+    struct PfsVol *v = (struct PfsVol *)v0;
+    int attempt;
+    if (!v->bm_loaded || need == 0) return 0;
+    for (attempt = 0; v->runs && attempt < 2; attempt++) {
+        ULONG r = idx_find_run(v, need, ex_lo, ex_hi);
+        if (r == 0 || run_is_free(v, r, need)) return r;
+        if (attempt == 0) runs_build(v); else runs_drop(v);
+    }
     return bm_scan(v, 0, need, ex_lo, ex_hi, NULL, 0, NULL);
 }
 
-ULONG pfs_bm_largest_run(const struct PfsVol *v, const ULONG *skip, ULONG nskip, ULONG *len)
+ULONG pfs_bm_find_run(const struct PfsVol *v, ULONG need)
 {
+    return pfs_bm_find_run_ex(v, need, 0, 0);
+}
+
+ULONG pfs_bm_largest_run(const struct PfsVol *v0, const ULONG *skip, ULONG nskip, ULONG *len)
+{
+    struct PfsVol *v = (struct PfsVol *)v0;
+    int attempt;
+    if (!v->bm_loaded) return 0;
+    for (attempt = 0; v->runs && attempt < 2; attempt++) {
+        ULONG l = 0, r = idx_largest_run(v, skip, nskip, &l);
+        if (r == 0 || run_is_free(v, r, l)) { if (len) *len = l; return r; }
+        if (attempt == 0) runs_build(v); else runs_drop(v);
+    }
     return bm_scan(v, 1, 0, 0, 0, skip, nskip, len);
 }
 

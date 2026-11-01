@@ -438,8 +438,8 @@ static BOOL move_pieces(struct Eng *e, ULONG first, ULONG n, ULONG next_after, U
     ULONG head = e->pieces[first].an, i, pos;
 
     if (e->o->dry_run) {
-        for (i = first; i < first + n; i++) { ULONG s; for (s = 0; s < e->pieces[i].cs; s++) pfs_bm_set(v, e->pieces[i].blk + s, TRUE); }
-        for (i = 0; i < nblk; i++) pfs_bm_set(v, dest + i, FALSE);
+        for (i = first; i < first + n; i++) pfs_bm_set_range(v, e->pieces[i].blk, e->pieces[i].cs, TRUE);
+        pfs_bm_set_range(v, dest, nblk, FALSE);
         tab_moved(e, first, n, dest, nblk, flags);
         return TRUE;
     }
@@ -463,7 +463,7 @@ static BOOL move_pieces(struct Eng *e, ULONG first, ULONG n, ULONG next_after, U
 
     /* 3. journal, 4. new run used */
     if (!journal_set(e, first, n, next_after, dest, nblk)) { seterr(e, "journal write failed"); return FALSE; }
-    for (i = 0; i < nblk; i++) pfs_bm_set(v, dest + i, FALSE);
+    pfs_bm_set_range(v, dest, nblk, FALSE);
     if (!pfs_bm_flush(v)) { seterr(e, v->err); return FALSE; }
 
     /* 5. commit: the first anode of the range now describes the new run */
@@ -490,7 +490,7 @@ static BOOL move_pieces(struct Eng *e, ULONG first, ULONG n, ULONG next_after, U
             e->st->needs_validation = TRUE;
             return FALSE;
         }
-    for (i = first; i < first + n; i++) { ULONG s; for (s = 0; s < e->pieces[i].cs; s++) pfs_bm_set(v, e->pieces[i].blk + s, TRUE); }
+    for (i = first; i < first + n; i++) pfs_bm_set_range(v, e->pieces[i].blk, e->pieces[i].cs, TRUE);
     if (!pfs_bm_flush(v)) { seterr(e, v->err); e->st->needs_validation = TRUE; return FALSE; }
     BlockDev_Update(v->bd);
     if (!journal_clear(e)) { seterr(e, "journal clear failed"); e->st->needs_validation = TRUE; return FALSE; }
