@@ -64,6 +64,12 @@ struct FfsDefragPlatform {
     BOOL (*create_journal)(void *ud, const struct VolumeInfo *v, ULONG bytes, char *err, ULONG errlen);
     BOOL (*delete_journal)(void *ud, const struct VolumeInfo *v);
     void *ud;
+    /* Optional, NULL on the Amiga: journal storage outside the volume.
+     * The host builds have no handler to create the in-volume journal
+     * file, so they keep the journal in a sidecar file instead: read or
+     * write len bytes at byte offset off of it. create_journal opens or
+     * creates it, delete_journal removes it. */
+    BOOL (*journal_io)(void *ud, BOOL write, ULONG off, void *buf, ULONG len);
 };
 const struct FfsDefragPlatform *FfsDefrag_DefaultPlatform(void);
 

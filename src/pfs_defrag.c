@@ -45,6 +45,8 @@ struct Eng {
     struct PfsVol v;
     const struct VolumeInfo *vi;
     const struct FfsDefragOpts *o;
+    const struct FfsDefragPlatform *pf;
+    BOOL   jext;                     /* journal in pf->journal_io, not in the volume */
     FfsDefragLog  log;
     FfsDefragMove move;
     void *ud;
@@ -282,9 +284,27 @@ static BOOL collect_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULO
 /* journal                                                             */
 /* ------------------------------------------------------------------ */
 
+/* journal sector idx: in the volume's journal file or in the sidecar */
+static BOOL jread(struct Eng *e, ULONG idx, UBYTE *buf)
+{
+    if (e->jext) return e->pf->journal_io(e->pf->ud, FALSE, idx * SEC, buf, SEC);
+    return pfs_read_sectors(&e->v, e->jsec[idx], 1, buf);
+}
+static BOOL jwrite(struct Eng *e, ULONG idx, const UBYTE *buf)
+{
+    if (e->jext) return e->pf->journal_io(e->pf->ud, TRUE, idx * SEC, (void *)buf, SEC);
+    return pfs_write_sectors(&e->v, e->jsec[idx], 1, buf);
+}
+
 static BOOL journal_find(struct Eng *e)
 {
     ULONG nblk, runs, np, i;
+    if (e->jext) {
+        e->janode = 0;
+        e->jcount = PFS_JOURNAL_MAX_SEC;
+        e->jcap   = (e->jcount - 1) * PIECES_PER_SEC;
+        return TRUE;
+    }
     e->janode = pfs_root_lookup(&e->v, FFS_JOURNAL_NAME);
     if (!e->janode) return FALSE;
     np = gather_chain(e, e->janode, &nblk, &runs);
@@ -312,7 +332,7 @@ static BOOL journal_record(struct Eng *e, ULONG state, ULONG head, ULONG dest, U
     putl(e->sec, J_NBLK, nblk);
     putl(e->sec, J_NPC, np);
     putl(e->sec, J_NEXT, next_after);
-    return pfs_write_sectors(&e->v, e->jsec[0], 1, e->sec);
+    return jwrite(e, 0, e->sec);
 }
 
 /* state 1: the pieces (old chain) go first, the record last, so a
@@ -326,7 +346,7 @@ static BOOL journal_set(struct Eng *e, ULONG first, ULONG np, ULONG next_after, 
             const struct Piece *p = &e->pieces[first + s * PIECES_PER_SEC + i];
             putl(e->sec, 12 * i, p->an); putl(e->sec, 12 * i + 4, p->blk); putl(e->sec, 12 * i + 8, p->cs);
         }
-        if (!pfs_write_sectors(&e->v, e->jsec[1 + s], 1, e->sec)) return FALSE;
+        if (!jwrite(e, 1 + s, e->sec)) return FALSE;
     }
     return journal_record(e, 1, e->pieces[first].an, dest, nblk, np, next_after);
 }
@@ -344,7 +364,7 @@ static BOOL journal_recover(struct Eng *e)
     ULONG head, dest, nblk, np, i, s, cs, blk, next, next_after;
     BOOL committed;
 
-    if (!pfs_read_sectors(v, e->jsec[0], 1, e->sec)) return FALSE;
+    if (!jread(e, 0, e->sec)) return FALSE;
     if (be32(e->sec, J_MAGIC) != JOURNAL_MAGIC) return TRUE;         /* fresh file */
     e->jseq = be32(e->sec, J_SEQ);
     if (be32(e->sec, J_STATE) != 1) return TRUE;
@@ -353,7 +373,7 @@ static BOOL journal_recover(struct Eng *e)
     if (np == 0 || np > e->jcap || nblk == 0 || dest < v->bitmapstart || dest + nblk > v->disksize) return TRUE;
     if (!pieces_reserve(e, np)) return FALSE;
     for (s = 0; s * PIECES_PER_SEC < np; s++) {
-        if (!pfs_read_sectors(v, e->jsec[1 + s], 1, e->sec)) return FALSE;
+        if (!jread(e, 1 + s, e->sec)) return FALSE;
         for (i = 0; i < PIECES_PER_SEC && s * PIECES_PER_SEC + i < np; i++) {
             struct Piece *p = &e->pieces[s * PIECES_PER_SEC + i];
             p->an = be32(e->sec, 12 * i); p->blk = be32(e->sec, 12 * i + 4); p->cs = be32(e->sec, 12 * i + 8);
@@ -651,7 +671,7 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
 {
     struct Eng *e;
     LONG rc = RETURN_ERROR;
-    BOOL inhibited = FALSE, opened = FALSE, journal_made = FALSE;
+    BOOL inhibited = FALSE, opened = FALSE, journal_made = FALSE, journal_checked = FALSE;
     ULONG i, dirs = 0;
 
     memset(stats, 0, sizeof(*stats));
@@ -666,6 +686,7 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     if (!e) { if (err) strncpy(err, "out of memory", errlen - 1); return RETURN_ERROR; }
     e->vi = vi; e->o = opts; e->log = log; e->move = move; e->ud = ud; e->st = stats;
     e->err = err; e->errlen = errlen;
+    e->pf = pf; e->jext = pf->journal_io != NULL;
     e->tab_ok = TRUE;
 
     if (!opts->dry_run) {
@@ -704,6 +725,7 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     }
     if (!opts->dry_run) {
         if (!journal_recover(e)) { seterr(e, "journal check failed"); goto done; }
+        journal_checked = TRUE;
     }
     elog(e, "%lu fragmented file(s), %lu blocks, %lu blocks free",
          (unsigned long)stats->candidates, (unsigned long)stats->cand_blocks, (unsigned long)e->v.free_blocks);
@@ -764,7 +786,7 @@ done:
     ustack_free(&e->later);
     if (e->tab) FreeVec(e->tab);
     if (inhibited) pf->inhibit(pf->ud, vi, FALSE, NULL, 0);
-    if (journal_made && !stats->needs_validation) pf->delete_journal(pf->ud, vi);
+    if (journal_made && journal_checked && !stats->needs_validation) pf->delete_journal(pf->ud, vi);
     FreeVec(e);
     return rc;
 }

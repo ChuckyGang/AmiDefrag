@@ -24,6 +24,8 @@ struct Eng {
     struct FfsVol v;
     const struct VolumeInfo *vi;
     const struct FfsDefragOpts *o;
+    const struct FfsDefragPlatform *pf;
+    BOOL   jext;                     /* journal in pf->journal_io, not in the volume */
     FfsDefragLog  log;
     FfsDefragMove move;
     void *ud;
@@ -40,6 +42,7 @@ struct Eng {
     /* buffers */
     UBYTE *hdr, *img, *jbuf, *chunk, *chunk2, *extb;
     BOOL writes_begun;
+    BOOL bm_bad;                     /* a header block is marked free in the bitmap */
 };
 
 static void putl(UBYTE *b, ULONG li, ULONG v)
@@ -81,6 +84,12 @@ static void name_of(const struct Eng *e, const UBYTE *hdr, char *out, ULONG outl
 static BOOL journal_find(struct Eng *e)
 {
     ULONG nblk = 0, runs = 0, next = 0;
+    if (e->jext) {                       /* sidecar: one FS block per index */
+        e->jkey = 0;
+        e->jcount = FFS_JOURNAL_BLOCKS;
+        e->payload = e->v.bsz;
+        return TRUE;
+    }
     e->jkey = ffs_root_lookup(&e->v, FFS_JOURNAL_NAME);
     if (!e->jkey) return FALSE;
     if (!ffs_read(&e->v, e->jkey, 1, e->hdr) || !ffs_is_header(e->hdr, e->v.nlongs, FFS_T_SHORT, FFS_ST_FILE))
@@ -98,6 +107,7 @@ static BOOL journal_put(struct Eng *e, ULONG idx, const UBYTE *data, ULONG len)
 {
     UBYTE *b = e->jbuf;
     ULONG off = e->v.ofs ? FFS_OFS_HDR : 0;
+    if (e->jext) return e->pf->journal_io(e->pf->ud, TRUE, idx * e->v.bsz, (void *)data, len);
     if (!ffs_read(&e->v, e->jblk[idx], 1, b)) return FALSE;
     memset(b + off, 0, e->payload);
     memcpy(b + off, data, len);
@@ -109,6 +119,7 @@ static BOOL journal_get(struct Eng *e, ULONG idx, UBYTE *data, ULONG len)
 {
     UBYTE *b = e->jbuf;
     ULONG off = e->v.ofs ? FFS_OFS_HDR : 0;
+    if (e->jext) return e->pf->journal_io(e->pf->ud, FALSE, idx * e->v.bsz, data, len);
     if (!ffs_read(&e->v, e->jblk[idx], 1, b)) return FALSE;
     memcpy(data, b + off, len);
     return TRUE;
@@ -211,6 +222,7 @@ static BOOL recover_root(struct Eng *e, struct BlockDev *bd, const struct Volume
     if (!buf) return FALSE;
     rec = buf + t.bsz * CHUNK;
     elog(e, "Root block damaged - searching for the journal file");
+    if (e->jext) jkey = 1;                       /* sidecar: nothing to find on disk */
     for (blk = t.reserved; blk < t.nblocks && !jkey; blk += n) {
         n = t.nblocks - blk; if (n > CHUNK) n = CHUNK;
         if (!ffs_read(&t, blk, n, buf)) continue;
@@ -232,9 +244,14 @@ static BOOL recover_root(struct Eng *e, struct BlockDev *bd, const struct Volume
         struct FfsVol keep = *save;
         *save = t;                                   /* journal helpers work on e->v */
         e->jkey = jkey;
-        if (ffs_file_layout(save, e->hdr, e->jblk, FFS_JOURNAL_BLOCKS, NULL, 0, &nblk, &runs, &next)) {
-            e->jcount  = nblk > FFS_JOURNAL_BLOCKS ? FFS_JOURNAL_BLOCKS : nblk;
-            e->payload = t.ofs ? t.bsz - FFS_OFS_HDR : t.bsz;
+        if (e->jext || ffs_file_layout(save, e->hdr, e->jblk, FFS_JOURNAL_BLOCKS, NULL, 0, &nblk, &runs, &next)) {
+            e->jcount  = e->jext ? FFS_JOURNAL_BLOCKS : (nblk > FFS_JOURNAL_BLOCKS ? FFS_JOURNAL_BLOCKS : nblk);
+            e->payload = e->jext ? t.bsz : (t.ofs ? t.bsz - FFS_OFS_HDR : t.bsz);
+            /* the root is at the computed place or where the boot block
+             * points (ffs_open accepts both); the record names which */
+            ULONG alt = 0, rkey = e->jcount >= 1 && journal_get(e, 0, rec, 32) ? be32(rec, J_HDR * 4) : 0;
+            if (ffs_read(save, 0, 1, e->chunk)) alt = bel(e->chunk, 2);
+            if (rkey && (rkey == root || (alt && rkey == alt))) root = rkey;
             if (e->jcount >= 1 && journal_get(e, 0, rec, 32) && be32(rec, 0) == JOURNAL_MAGIC &&
                 be32(rec, J_STATE * 4) == 1 && be32(rec, J_HDR * 4) == root && be32(rec, J_IMGLEN * 4) == t.bsz) {
                 ULONG done = 0, idx = 1;
@@ -270,6 +287,7 @@ static BOOL collect_cb(void *ud, ULONG key, const UBYTE *hdr, LONG sectype)
 {
     struct Eng *e = (struct Eng *)ud;
     ULONG nblk = 0, runs = 0, next = 0;
+    if (ffs_bm_isfree(&e->v, key)) e->bm_bad = TRUE;
     if (sectype != FFS_ST_FILE || key == e->jkey) return TRUE;
     if (!ffs_file_layout(&e->v, hdr, NULL, 0, NULL, 0, &nblk, &runs, &next)) {
         char nm[32];
@@ -330,6 +348,11 @@ static BOOL process_file(struct Eng *e, ULONG hdrkey)
     if (!ffs_file_layout(v, e->hdr, old, nblk, oldext, next, &nblk, &runs, &next)) {
         e->st->skipped_error++; ok = TRUE; goto done;
     }
+    for (i = 0; i < nblk + next; i++)
+        if (ffs_bm_isfree(v, i < nblk ? old[i] : oldext[i - nblk])) {
+            elog(e, "Skipping %s: its blocks are marked free in the bitmap", nm);
+            e->st->skipped_error++; ok = TRUE; goto done;
+        }
 
     new_ext = (nblk > v->tsize) ? (nblk - v->tsize + v->tsize - 1) / v->tsize : 0;
     need    = nblk + new_ext;
@@ -447,7 +470,7 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
 {
     struct Eng *e;
     LONG rc = RETURN_ERROR;
-    BOOL inhibited = FALSE, opened = FALSE, journal_made = FALSE;
+    BOOL inhibited = FALSE, opened = FALSE, journal_made = FALSE, journal_checked = FALSE;
     ULONG i;
 
     memset(stats, 0, sizeof(*stats));
@@ -461,6 +484,7 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     e = (struct Eng *)AllocVec(sizeof(*e), MEMF_PUBLIC | MEMF_CLEAR);
     if (!e) { if (err) strncpy(err, "out of memory", errlen - 1); return RETURN_ERROR; }
     e->vi = vi; e->o = opts; e->log = log; e->move = move; e->ud = ud; e->st = stats;
+    e->pf = pf; e->jext = pf->journal_io != NULL;
     e->err = err; e->errlen = errlen;
 
     if (!opts->dry_run) {
@@ -494,14 +518,24 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     if (!opts->dry_run) {
         if (!journal_find(e)) { seterr(e, "journal file " FFS_JOURNAL_NAME " not found in the root directory"); goto done; }
         if (!journal_recover(e)) { seterr(e, "journal check failed"); goto done; }
+        journal_checked = TRUE;
     }
     if (!e->v.bm_flag_valid) {
         seterr(e, "bitmap flag is invalid: mount the volume and let the filesystem validate it first");
         rc = RETURN_WARN;
         goto done;
     }
+    /* a bitmap that frees its own pages or the root is corrupt even with
+     * the flag valid; writing by it would overwrite them */
+    {
+        BOOL bad = ffs_bm_isfree(&e->v, e->v.root);
+        for (i = 0; i < e->v.pages && !bad; i++) bad = ffs_bm_isfree(&e->v, e->v.page_key[i]);
+        for (i = 0; i < e->v.ext_count && !bad; i++) bad = ffs_bm_isfree(&e->v, e->v.ext_key[i]);
+        if (bad) { seterr(e, "bitmap marks the root or a bitmap block free: let the filesystem validate the volume first"); goto done; }
+    }
 
     if (!ffs_walk(&e->v, collect_cb, e)) { seterr(e, "directory walk failed"); goto done; }
+    if (e->bm_bad) { seterr(e, "bitmap marks a file or directory block free: let the filesystem validate the volume first"); goto done; }
     elog(e, "%lu fragmented file(s), %lu blocks, %lu blocks free",
          (unsigned long)stats->candidates, (unsigned long)stats->cand_blocks, (unsigned long)e->v.free_blocks);
     if (stats->candidates == 0) { rc = RETURN_WARN; goto done; }
@@ -534,7 +568,9 @@ done:
     if (e->hdr) FreeVec(e->hdr);
     ustack_free(&e->cands);
     if (inhibited) pf->inhibit(pf->ud, vi, FALSE, NULL, 0);
-    if (journal_made && !stats->needs_validation) pf->delete_journal(pf->ud, vi);
+    /* a journal that was never checked may hold the record of an earlier
+     * interrupted run: keep it for the next attempt */
+    if (journal_made && journal_checked && !stats->needs_validation) pf->delete_journal(pf->ud, vi);
     FreeVec(e);
     return rc;
 }

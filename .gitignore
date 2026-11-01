@@ -3,6 +3,7 @@ out/
 test/*.hdf
 test/work/
 host/amidefrag
+host/amidefrag-gui
 # emulator droppings when the repo dir is mounted as a drive
 Disk.info
 Disk.info.uaem

@@ -13,8 +13,10 @@ built so that the disk is **never left in a dangerous state**.
 ## Download
 
 **[Latest build](https://github.com/ChuckyGang/AmiDefrag/releases/latest)** — the
-Amiga executable with icon in an LHA archive, plus the native Linux CLI.
-Click **Assets** on that page to see the files. Every push to `main` replaces
+Amiga executable with icon in an LHA archive, plus the native Linux CLI
+(`amidefrag-linux-x86_64`) and the Linux GTK window
+(`amidefrag-gui-linux-x86_64`, needs the GTK3 runtime that every desktop
+has). Click **Assets** on that page to see the files. Every push to `main` replaces
 the rolling `proto` prerelease and keeps a dated copy.
 
 **Director:** John Hertell — john(at)hertell.nu
@@ -136,6 +138,7 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
 ```
 make                 # Amiga binary out/AmiDefrag (+ .info), Bartman toolchain
 make linux           # native Linux CLI host/amidefrag (image mode, plain gcc)
+make linux-gui       # native Linux GTK3 window host/amidefrag-gui (needs libgtk-3-dev)
 make testdisk        # test/test.hdf: FFS + PFS3 + SFS partitions with files
 python3 test/ffsfuzz.py 10   # FFS engine fuzz loop with crash replay (needs xdftool)
 test/make_bigfrag.py --fs ffs   # 1 GB torture image (also pfs3 / sfs), see below
@@ -146,8 +149,8 @@ test/pfs_bigcheck.py IMG --partition FRG1   # PFS3 engine on a copy of a big ima
 
 Toolchain selection, paths and the Bebbo alternative are the same as in
 AmiPart (see the Makefile header). The same `src/*.c` compile on both
-targets; `host/` holds the thin POSIX shim and `gui.c` is the only
-Amiga-only file. A Linux GUI frontend over the same map is planned.
+targets; `host/` holds the thin POSIX shim, the sidecar journal and the
+GTK window; `src/gui.c` is the only Amiga-only file.
 
 ## Use
 
@@ -173,12 +176,40 @@ AmiDefrag DH1: DEFRAG               defragment (asks for YES unless FORCE)
 On an SFS volume DEFRAG drives the handler's defragmenter, so there is no
 DRYRUN preview there and the volume must be mounted.
 
-On an image file (Linux, or `IMAGE=` on the Amiga) there is no handler to
-create the journal, so a file named `AmiDefrag.journal` must exist in the
-root directory first: 2 KB on FFS (`xdftool img write journal.bin
-AmiDefrag.journal`), 128 KB on PFS3 (it records the old chain of the file
-in flight, up to about 10,000 pieces). On a mounted volume AmiDefrag
-creates and removes it itself.
+On a mounted Amiga volume AmiDefrag creates the journal file
+`AmiDefrag.journal` in the root directory itself (2 KB on FFS, 128 KB on
+PFS3: it records the old chain of the file in flight, up to about 10,000
+pieces) and removes it afterwards. With `IMAGE=` on the Amiga there is no
+handler to create it, so it must exist in the image first (`xdftool img
+write journal.bin AmiDefrag.journal`).
+
+### Linux
+
+```
+amidefrag IMAGE=disk.hdf LIST                     partitions of an image
+amidefrag IMAGE=disk.hdf PART=DH0 MAP             text map
+amidefrag IMAGE=disk.hdf PART=DH0 DRYRUN | DEFRAG the engine (FFS, PFS3)
+sudo amidefrag IMAGE=/dev/sdb LIST                a real disk (CF card, SD...)
+amidefrag-gui [disk.hdf [PART]]                   the window; PART analyses at once
+sudo amidefrag-gui /dev/sdb                       the window on a real disk
+```
+
+The window is the Amiga one on GTK3: partition list, Analyze, Rescan,
+Defragment, Stop, About, the live block map and the status line, driven
+by the same engines through the same callbacks. Open takes an image file;
+a raw disk is given on the command line and needs root. FFS and PFS3 are
+defragmented; SFS is map only on Linux, because its engine drives the
+SmartFilesystem handler through DOS packets and there is no handler here.
+
+On Linux the run's journal is a **sidecar file**, since nothing here can
+create a file inside the filesystem: `<image>.AmiDefrag-journal-<start
+block>` next to the image, or `/var/tmp/amidefrag-<disk>-<start
+block>.journal` for a raw disk. It is created when a live run starts and
+removed when the run ends cleanly; one left behind means an interrupted
+run, and the next run on the same partition reads it to finish or undo
+that file's move. Nothing else may have the image or disk open or mounted
+during a run. `AMIDEFRAG_JOURNAL_IN_VOLUME=1` selects the Amiga behaviour
+(journal file in the volume) instead; the test harnesses use it.
 
 ## Debug
 
@@ -222,7 +253,8 @@ src/        shared core: blockdev (read-only I/O), volume (DosList / RDB),
             ffs_core + ffs_defrag (FFS engine), pfs_core + pfs_defrag (PFS3
             engine), sfs_defrag (SFS via handler),
             cli (ReadArgs mode), gui (GadTools window), main
-host/       Linux build: amiga_compat.h, amiga_shim.c, host_rdargs.c, host_main.c
+host/       Linux build: amiga_compat.h, amiga_shim.c, host_rdargs.c, host_main.c,
+            host_platform.c (sidecar journal), gui_gtk.c (GTK3 window)
 support/    Bartman runtime support, icon generator, LHA packer
 test/       make_testdisk.sh, make_bigfrag.py, ffsfuzz.py, pfsfuzz.py,
             pfs_bigcheck.py, sfs_handler_defrag.py

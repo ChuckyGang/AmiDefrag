@@ -60,8 +60,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build native Linux CLI
-        run: make linux
+      - name: Build native Linux CLI and GTK window
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libgtk-3-dev
+          make linux
+          make linux-gui
 
       # Real FFS made by xdftool: the map must parse it, find the files and
       # report the fragmentation the delete/rewrite pattern creates.
@@ -83,7 +87,8 @@ jobs:
           grep -q "fragmented: 2 " ci.out
           grep -q "unknown  *0 blocks" ci.out
           # and the engine itself: both files contiguous afterwards, contents intact
-          ./amidefrag IMAGE=ci.hdf DEFRAG FORCE | tee defrag.out
+          # (journal in the volume, as on the Amiga; the host default is a sidecar file)
+          AMIDEFRAG_JOURNAL_IN_VOLUME=1 ./amidefrag IMAGE=ci.hdf DEFRAG FORCE | tee defrag.out
           grep -q "2 moved" defrag.out
           ./amidefrag IMAGE=ci.hdf | tee after.out
           grep -q "fragmented: 0 " after.out
@@ -93,11 +98,13 @@ jobs:
           xdftool ci.hdf read d/b3 b3.out && cmp b3.out b.bin
           xdftool ci.hdf read a3 a3.out && cmp a3.out a.bin
 
-      - name: Upload Linux binary
+      - name: Upload Linux binaries
         uses: actions/upload-artifact@v4
         with:
           name: amidefrag-linux-x86_64
-          path: host/amidefrag
+          path: |
+            host/amidefrag
+            host/amidefrag-gui
           if-no-files-found: error
 
   release:
@@ -138,10 +145,11 @@ jobs:
           git push --delete origin proto 2>/dev/null || true
           gh release create proto \
             --title "AmiDefrag ${{ steps.date.outputs.DATE }} PROTO" \
-            --notes "Automated prototype build from commit \`${{ github.sha }}\`. Read-only volume map; no defragmentation yet." \
+            --notes "Automated prototype build from commit \`${{ github.sha }}\`. Amiga program (LHA), Linux CLI and Linux GTK window (needs the GTK3 runtime, present on most desktops)." \
             --prerelease \
             "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
-            "linux-out/amidefrag#amidefrag-linux-x86_64"
+            "linux-out/amidefrag#amidefrag-linux-x86_64" \
+            "linux-out/amidefrag-gui#amidefrag-gui-linux-x86_64"
 
       # The rolling "proto" release is replaced on every push; keep a dated
       # copy as well so earlier builds stay downloadable (as AmiPart does).
@@ -155,4 +163,5 @@ jobs:
             --notes "Archived prototype build from commit \`${{ github.sha }}\`. The rolling \`proto\` release always has the newest build." \
             --prerelease \
             "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
-            "linux-out/amidefrag#amidefrag-linux-x86_64"
+            "linux-out/amidefrag#amidefrag-linux-x86_64" \
+            "linux-out/amidefrag-gui#amidefrag-gui-linux-x86_64"

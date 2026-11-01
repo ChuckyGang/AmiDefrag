@@ -7,6 +7,7 @@
 #
 #   make                      Amiga binary (out/AmiDefrag)
 #   make linux                native Linux CLI (host/amidefrag), image mode
+#   make linux-gui            native Linux GTK3 window (host/amidefrag-gui), needs libgtk-3-dev
 #   make TOOLCHAIN=bebbo AMIGA=/opt/amiga
 #   make TOOLCHAIN=bartman BARTMAN=/path/to/bartman/bin/linux
 
@@ -86,6 +87,8 @@ objects := $(src_obj) $(TC_SUPPORT_OBJ)
 amiga: all
 linux:
 	$(MAKE) -C host
+linux-gui:
+	$(MAKE) -C host gui
 
 all: $(program) $(program).info
 

@@ -178,6 +178,15 @@ static BOOL load_bitmap(struct FfsVol *v)
         }
         if (key == 0 || key >= v->nblocks || !ffs_read(v, key, 1, v->scratch) ||
             !ffs_checksum_ok(v->scratch, nl)) {
+            /* With the flag invalid the bitmap is going to be rebuilt by the
+             * filesystem anyway (a torn page write at the end of a run leaves
+             * exactly this), so the volume still opens; the engines refuse
+             * to write until it is validated. */
+            if (!v->bm_flag_valid && key != 0 && key < v->nblocks) {
+                v->page_key[page] = key;
+                for (j = 1; j < nl && li < v->bm_longs; j++) v->bm[li++] = 0;   /* "all used": nothing is handed out */
+                continue;
+            }
             snprintf(v->err, sizeof(v->err), "bitmap page %lu unreadable or bad checksum", (unsigned long)page);
             FreeVec(extb); return FALSE;
         }

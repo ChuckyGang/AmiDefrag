@@ -30,6 +30,9 @@ DOSTYPES = ["ofs", "ffs", "ofs+intl", "ffs+intl", "ffs+intl+dircache", "ofs+intl
 
 def sh(cmd, env=None, check=True):
     e = dict(os.environ)
+    # the Amiga keeps the journal in the volume: test that path unless the
+    # caller asks for the host's sidecar journal (AMIDEFRAG_SIDECAR=1)
+    if not os.environ.get("AMIDEFRAG_SIDECAR"): e.setdefault("AMIDEFRAG_JOURNAL_IN_VOLUME", "1")
     if env: e.update(env)
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=e)
     if check and r.returncode != 0:
@@ -217,8 +220,9 @@ def validate(img):
             for j in range(nl - 1):
                 if len(keys) < pages: keys.append(be(eb, j))
             ext = be(eb, nl - 1)
+        used.update(keys)                     # all pages first: a page built early must
+                                              # already see the later pages' keys as used
         for p, key in enumerate(keys):
-            used.add(key)
             page = bytearray(bs)
             for j in range(1, nl):
                 w = 0
@@ -292,15 +296,18 @@ def iteration(it, seed):
                 rc2, _, _, _, out2 = run_defrag(img)         # journal repair, then "needs validation" or finish
                 if rc2 not in (0, 5):
                     return fail(f"post-crash run rc={rc2}\n{out2}", img, tag)
-                bad = check_files(img, files)
-                if bad:
-                    return fail(f"content lost after crash at write {n}{'t' if torn else ''}: {bad}\n{out}\n{out2}", img, tag)
+                # validate first when the flag is invalid: a bitmap page torn by
+                # the crash makes xdftool refuse the volume, while FFS itself
+                # would rebuild the bitmap at mount and read the files fine
                 _, _, _, valid, _ = analyse(img)
                 if not valid:
                     validate(img)
                     _, unk, note, valid, out_v = analyse(img)
                     if unk or note or not valid:
                         return fail(f"harness validator left the bitmap inconsistent: unknown={unk} {note}\n{out_v}", img, tag)
+                bad = check_files(img, files)
+                if bad:
+                    return fail(f"content lost after crash at write {n}{'t' if torn else ''}: {bad}\n{out}\n{out2}", img, tag)
                 rc3, _, _, skipped3, out3 = run_defrag(img)
                 if rc3 not in (0, 5):
                     return fail(f"rerun after validation rc={rc3}\n{out3}", img, tag)

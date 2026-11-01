@@ -131,6 +131,9 @@ sys.stdout.write("\n@@JSON@@" + json.dumps(out) + "\n")
 
 def sh(cmd, env=None, check=True):
     e = dict(os.environ)
+    # the Amiga keeps the journal in the volume: test that path unless the
+    # caller asks for the host's sidecar journal (AMIDEFRAG_SIDECAR=1)
+    if not os.environ.get("AMIDEFRAG_SIDECAR"): e.setdefault("AMIDEFRAG_JOURNAL_IN_VOLUME", "1")
     if env: e.update(env)
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=e)
     if check and r.returncode != 0:

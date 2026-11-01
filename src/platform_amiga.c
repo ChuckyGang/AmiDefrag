@@ -93,7 +93,7 @@ static BOOL pf_delete_journal(void *ud, const struct VolumeInfo *v)
     return ok;
 }
 
-static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL };
+static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL, NULL };
 
 const struct FfsDefragPlatform *FfsDefrag_DefaultPlatform(void)
 {
