@@ -179,6 +179,19 @@ AmiDefrag DH1: DRYRUN               what DEFRAG would move, nothing written (FFS
 AmiDefrag DH1: DEFRAG               defragment (asks for YES unless FORCE)
 ```
 
+### Localization
+
+The window and the CLI output are translatable through AmigaOS
+locale.library catalogs. `catalogs/AmiDefrag.cd` is the single source of
+truth; `make catalog-template LANG=<language>` writes a translation
+template and `make catalog LANG=<language>` compiles it into
+`catalogs/<language>/AmiDefrag.catalog`, to be installed as
+`LOCALE:Catalogs/<language>/AmiDefrag.catalog` or next to the program in
+`PROGDIR:Catalogs/`. Without a catalog, or on Kickstart 2.04, the built-in
+English strings are used. The engines' own progress lines, the DEBUG
+output and the CLI's `YES` confirmation stay English on purpose. Details
+in `catalogs/README.txt`.
+
 On an SFS volume DEFRAG drives the handler's defragmenter, so there is no
 DRYRUN preview there and the volume must be mounted.
 

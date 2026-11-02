@@ -1,0 +1,355 @@
+## AmiDefrag.cd - catalog description (single source of truth for all
+## translatable strings).  CatComp/FlexCat-compatible.
+##
+## Generate the C header:   python3 support/gencat.py header AmiDefrag.cd ../src/amidefrag_strings.h
+## Make a translation tmpl:  python3 support/gencat.py ct AmiDefrag.cd deutsch.ct deutsch
+## Compile a .catalog:        python3 support/gencat.py catalog AmiDefrag.cd deutsch.ct AmiDefrag.catalog
+##
+## RULES FOR EDITORS:
+##   * Append new messages at the END of their section, never insert in the
+##     middle - ids are positional and must stay stable for existing catalogs.
+##   * Keep printf-style %-placeholders identical in translations (same
+##     count and order; %% is a literal percent sign).
+##   * Button strings keep their "|" separators.  The five main-window
+##     buttons share one row, so keep their labels short.
+##   * The CLI confirmation word YES is not translated: the program always
+##     checks for the letters Y E S.
+##   * The engines' own progress / journal lines and the DEBUG output stay
+##     English on purpose, so bug reports read the same everywhere.
+##
+#language english
+#version 1
+#name AmiDefrag
+;
+;==========================================================================
+; Common
+;==========================================================================
+MSG_OK
+OK
+;
+MSG_CANCEL
+Cancel
+;
+MSG_APPNAME
+AmiDefrag
+;
+MSG_WARNING_TITLE
+AmiDefrag - Warning
+;
+MSG_BACKUP_DEFRAGMENT_CANCEL
+I have a backup - Defragment|Cancel
+;
+MSG_CANCELLED
+Cancelled.
+;
+MSG_OUT_OF_MEMORY
+Out of memory
+;
+;==========================================================================
+; Block classes (legend / statistics) - keep them short
+;==========================================================================
+MSG_CLASS_FREE
+free
+;
+MSG_CLASS_DATA
+data
+;
+MSG_CLASS_FRAG
+fragmented
+;
+MSG_CLASS_SYSTEM
+system
+;
+MSG_CLASS_RESERVED
+reserved
+;
+MSG_CLASS_UNKNOWN
+unknown
+;
+;==========================================================================
+; Map builder notes (shown after "DH0: ")
+;==========================================================================
+MSG_NOTE_UNSUPPORTED_FS
+unsupported filesystem type
+;
+MSG_NOTE_EMPTY_PARTITION
+empty partition
+;
+MSG_NOTE_NO_MEMORY_MAP
+out of memory (%lu KB needed for the map)
+;
+MSG_NOTE_CANCELLED
+cancelled
+;
+MSG_NOTE_SCAN_FAILED
+scan failed
+;
+;==========================================================================
+; GUI - buttons
+;==========================================================================
+MSG_BTN_ANALYZE
+_Analyze
+;
+MSG_BTN_RESCAN
+_Rescan
+;
+MSG_BTN_DEFRAGMENT
+_Defragment
+;
+MSG_BTN_STOP
+_Stop
+;
+MSG_BTN_ABOUT
+A_bout
+;
+;==========================================================================
+; GUI - status line
+;==========================================================================
+MSG_GUI_SELECT_AND_ANALYZE
+Select a volume and press Analyze.
+;
+MSG_GUI_NO_PARTITIONS
+No partitions found in the DOS device list.
+;
+MSG_GUI_SELECT_FIRST
+Select a volume first.
+;
+MSG_GUI_UNSUPPORTED_FS
+Unsupported filesystem on this partition.
+;
+MSG_GUI_CANNOT_OPEN_UNIT
+Cannot open %s unit %lu
+;
+MSG_GUI_CANNOT_OPEN_DEVICE
+Cannot open the device.
+;
+MSG_GUI_LIST_REFRESHED
+Volume list refreshed.
+;
+MSG_GUI_PROGRESS_COUNT
+%s... %lu
+;
+MSG_GUI_PROGRESS_PCT
+%s... %lu%%
+;
+MSG_GUI_SUMMARY
+%s: %lu files, %lu fragmented (%lu.%lu%%), %lu extra pieces, %s free%s%s
+;
+MSG_GUI_STOPPING_FILE
+Stopping after the current file...
+;
+MSG_GUI_STOPPING_STEP
+Stopping after the current step...
+;
+MSG_GUI_SFS_RUNNING
+%s: handler defragmenting, %s moved, %lu min %lu s%s
+;
+MSG_GUI_SFS_STOPPING_SUFFIX
+ - stopping after this step
+;
+MSG_GUI_SFS_NEEDS_MOUNT
+SFS is defragmented through its handler: the volume must be mounted.
+;
+MSG_GUI_ONLY_SUPPORTED_FS
+Only OFS/FFS, PFS3 and SFS volumes can be defragmented in this version.
+;
+MSG_GUI_NO_BOOT_VOLUME
+The boot volume is not defragmented in this version.
+;
+MSG_GUI_NOTHING_TO_DO
+Nothing to defragment.
+;
+MSG_GUI_RUN_SUMMARY
+%s: %lu of %lu file(s) made contiguous (%lu blocks), %lu skipped for space%s%s%s
+;
+MSG_GUI_RUN_AGAIN_SUFFIX
+ - RUN AGAIN TO FINISH
+;
+MSG_GUI_NEEDS_VALIDATION_SUFFIX
+ - VOLUME NEEDS VALIDATION
+;
+;==========================================================================
+; GUI - requesters
+;==========================================================================
+MSG_ABOUT_TITLE
+About %s
+;
+MSG_ABOUT_BODY
+AmiDefrag %s\nBuilt: %s\nDisk defragmenter for AmigaOS with the classic block map.\n\nFiles are moved one at a time with a journaled, single-write\ncommit per file, so the volume stays valid at every moment.\nOFS/FFS, PFS3 and SFS defragmentation.\n\nA native GadTools application, no dependencies beyond the ROM.\n\nDirector: John Hertell\nCode: Claude Code (Anthropic)\n\nhttps://github.com/ChuckyGang/AmiDefrag\n\nMIT License \xA9 2026 John Hertell
+;
+MSG_SFS_WARNING_BODY
+EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\nAmiDefrag will drive the defragmenter built into the\nSmartFilesystem handler of %s (%s:). The handler moves the\nblocks itself, one transaction-safe step at a time, and the\nvolume stays mounted and usable meanwhile. It also packs files\ntogether to consolidate free space, so it moves more than the\nfragmented files and can take a long time; Stop ends the run\nafter the current step.\n\nHandler: SmartFilesystem %lu.%lu, stack %lu bytes\n%lu files, %lu fragmented, %lu extra pieces.\n\nKeep a FULL BACKUP anyway. The author accepts NO responsibility\nfor any loss of data caused by this software.
+;
+MSG_SFS_RESULT_BODY
+Defragmentation of %s %s.\n\nMoved by the handler: %s (%lu blocks) in %lu steps\nTime: %lu min %lu s\n\nFragmented files: %lu -> %lu\nExtra pieces: %lu -> %lu%s
+;
+MSG_SFS_RESULT_STOPPED
+stopped at your request
+;
+MSG_SFS_RESULT_FINISHED
+finished
+;
+MSG_SFS_RESULT_CONTINUE_SUFFIX
+\nThe volume is consistent; run again to continue.
+;
+MSG_FFS_WARNING_BODY
+EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\nAmiDefrag rewrites file data and filesystem structures\non %s (%s:). A bug here can cause permanent data loss.\nMake sure you have a FULL BACKUP of this volume before\nproceeding. The author accepts NO responsibility for any\nloss of data caused by this software.\n\n%lu fragmented file(s), %lu blocks.\n%lu can be made contiguous directly, %lu have no free run\nlarge enough%s.\n\nThe volume is inhibited while this runs: nothing else must\nwrite to it. Files are moved one at a time; a crash leaves the\nvolume valid (the filesystem may validate it on the next mount).
+;
+MSG_FFS_WARNING_PFS_ROOM_SUFFIX
+ (room is made for them by moving other files aside)
+;
+MSG_FFS_RESULT_BODY
+Defragmentation of %s finished.\n\nFiles made contiguous: %lu of %lu\nData moved: %s (%lu blocks)\nMoved aside to make room: %lu run(s), %s\nTime: %lu min %lu s\nSkipped, no room could be made: %lu\n%s
+;
+MSG_FFS_RESULT_STOPPED_SUFFIX
+\nStopped at your request; the volume is consistent.
+;
+MSG_PFS_INTERRUPTED_BODY
+The run stopped after writes began.\nThe volume is readable, but one file's move is only\nrecorded in the journal: run AmiDefrag again on this\nvolume to let it finish or undo that move.
+;
+MSG_FFS_INTERRUPTED_BODY
+The run stopped after writes began.\nThe bitmap was left marked invalid on purpose:\nthe filesystem will validate the volume on the next mount.\nRun AmiDefrag again afterwards to finish.
+;
+;==========================================================================
+; CLI
+;==========================================================================
+MSG_CLI_TYPE_YES
+Type YES to defragment this volume: 
+;
+MSG_CLI_SFS_DRYRUN
+DRYRUN: on SFS the handler's built-in defragmenter decides the moves, so there\nis nothing to preview. It also packs files together to consolidate free space.\n
+;
+MSG_CLI_SFS_NEEDS_MOUNT
+DEFRAG: SFS is defragmented through the SmartFilesystem handler, so the volume\nmust be mounted; image files stay map-only.\n
+;
+MSG_CLI_SFS_HANDLER
+Handler: SmartFilesystem %lu.%lu, %lu blocks of %lu bytes, task stack %lu bytes\n
+;
+MSG_CLI_SFS_WARNING
+EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\nAmiDefrag drives the defragmenter built into the SmartFilesystem handler of\n%s (%s). The handler moves the blocks itself, one transaction-safe step at a\ntime; the volume stays mounted and usable. It also consolidates free space, so\nit moves more than the fragmented files and can take long. Ctrl-C stops it\nafter the current step. Keep a FULL BACKUP anyway; the author accepts no\nresponsibility for any loss of data.\n
+;
+MSG_CLI_CANCELLED
+Cancelled.\n
+;
+MSG_CLI_SFS_STOPPED
+Stopped at your request (Ctrl-C) after the current step; the volume is consistent.\n
+;
+MSG_CLI_SFS_DONE
+%s: %lu blocks moved by the handler in %lu steps (%lu moves)\n
+;
+MSG_CLI_DONE
+Done
+;
+MSG_CLI_STOPPED
+Stopped
+;
+MSG_CLI_DRY_RUN
+Dry run
+;
+MSG_CLI_ONLY_SUPPORTED_FS
+DEFRAG: only OFS/FFS, PFS3 and SFS volumes in this version.\n
+;
+MSG_CLI_WARNING
+EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\nAmiDefrag rewrites file data and filesystem structures on %s (%s).\nA bug here can cause permanent data loss. Make sure you have a FULL BACKUP.\nThe author accepts no responsibility for any loss of data.\nFragmented files are moved one at a time; the volume is inhibited while this\nruns, so nothing else must write to it.\n
+;
+MSG_CLI_FILE_STOPPED
+Stopped at your request (Ctrl-C) after the current file; the volume is consistent.\n
+;
+MSG_CLI_RUN_SUMMARY
+%s: %lu fragmented, %lu %s (%lu blocks), %lu skipped for space, %lu skipped with errors%s\n
+;
+MSG_CLI_WOULD_MOVE
+would move
+;
+MSG_CLI_MOVED
+moved
+;
+MSG_CLI_RUN_AGAIN_SUFFIX
+ - RUN AGAIN TO FINISH (journal)
+;
+MSG_CLI_NEEDS_VALIDATION_SUFFIX
+ - VOLUME NEEDS VALIDATION
+;
+MSG_CLI_NEEDS_ROOM
+%lu file(s) have no free run large enough; the live run makes room by moving neighbours aside.\n
+;
+MSG_CLI_MOVED_ASIDE
+Moved aside to make room: %lu run(s), %lu blocks\n
+;
+MSG_CLI_DEVICE_IO
+Device I/O: %lu blocks read, %lu written\n
+;
+MSG_CLI_NO_PARTITIONS
+No partitions found.\n
+;
+MSG_CLI_LIST_HEADER
+Name   Volume            Filesystem        Size      Device\n
+;
+MSG_CLI_LIST_ROW
+%-6s %-17s %-17s %-9s %s unit %lu%s\n
+;
+MSG_CLI_NOT_MOUNTED_SUFFIX
+ (not mounted)
+;
+MSG_CLI_CLASS_ROW
+  %c %-11s %10lu blocks  %9s  %3lu.%lu%%\n
+;
+MSG_CLI_VOLUME_HEADER
+Volume %s (%s:)  %s  %s, %lu blocks of %lu bytes\n
+;
+MSG_CLI_FILES_LINE
+Files: %lu, fragmented: %lu (%lu.%lu%%), extra fragments: %lu, worst file: %lu pieces\n
+;
+MSG_CLI_DIRECTORIES
+Directories: %lu\n
+;
+MSG_CLI_BITMAP_FLAG
+Bitmap flag: %s\n
+;
+MSG_CLI_BITMAP_VALID
+valid
+;
+MSG_CLI_BITMAP_INVALID
+INVALID (volume needs validation)
+;
+MSG_CLI_NOTE
+Note: %s\n
+;
+MSG_CLI_FILES_PFS_ONLY
+FILES: PFS3 volumes only in this version.\n
+;
+MSG_CLI_FILES_ERROR
+FILES: %s\n
+;
+MSG_CLI_FILES_NO_MEMORY
+FILES: out of memory\n
+;
+MSG_CLI_FILES_HEADER
+%s (pieces, blocks, path):\n
+;
+MSG_CLI_FILES_ALL
+Files
+;
+MSG_CLI_FILES_FRAGMENTED
+Fragmented files
+;
+MSG_CLI_FILES_LISTED
+%lu file(s) listed\n
+;
+MSG_CLI_MAP_HEADER
+\nBlock map, %lu blocks per character:\n
+;
+MSG_CLI_LEGEND
+Legend:
+;
+MSG_CLI_NO_MEMORY
+Out of memory\n
+;
+MSG_CLI_CANNOT_OPEN_IMAGE
+Cannot open image %s\n
+;
+MSG_CLI_PARTITION_NOT_FOUND
+Partition not found. Use LIST to see what is there.\n
+;
+MSG_CLI_CANNOT_OPEN_UNIT
+Cannot open %s unit %lu\n

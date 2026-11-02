@@ -9,3 +9,4 @@ Disk.info
 Disk.info.uaem
 __pycache__/
 host/runidx_test
+src/amidefrag_strings.h

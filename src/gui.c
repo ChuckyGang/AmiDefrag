@@ -39,6 +39,7 @@
 #include "sfs_defrag.h"
 #include "gui.h"
 #include "version.h"
+#include "locale_support.h"
 
 extern struct GfxBase *GfxBase;
 
@@ -304,8 +305,8 @@ static BOOL scan_progress(void *ud, ULONG done, ULONG total, const char *what)
     if (pct != g->last_pct) {
         char s[96];
         g->last_pct = pct;
-        if (pct == 0xFFFF) AD_SNPRINTF(s, "%s... %lu", what, (unsigned long)done);
-        else               AD_SNPRINTF(s, "%s... %lu%%", what, (unsigned long)pct);
+        if (pct == 0xFFFF) AD_SNPRINTF(s, GS(MSG_GUI_PROGRESS_COUNT), what, (unsigned long)done);
+        else               AD_SNPRINTF(s, GS(MSG_GUI_PROGRESS_PCT), what, (unsigned long)pct);
         set_status(g, s);
     }
     return TRUE;
@@ -317,7 +318,7 @@ static void summarize(struct Gui *g)
     char s[300], sz[24];
     ULONG p = m->files ? m->frag_files * 1000 / m->files : 0;
     Volume_SizeString(m->count[BLK_FREE], m->blocksize, sz, sizeof(sz));
-    AD_SNPRINTF(s, "%s: %lu files, %lu fragmented (%lu.%lu%%), %lu extra pieces, %s free%s%s",
+    AD_SNPRINTF(s, GS(MSG_GUI_SUMMARY),
                 m->volname, (unsigned long)m->files, (unsigned long)m->frag_files,
                 (unsigned long)(p / 10), (unsigned long)(p % 10),
                 (unsigned long)m->extra_runs, sz,
@@ -332,9 +333,9 @@ static void analyze(struct Gui *g)
     struct TagItem dis[] = { { GA_Disabled, TRUE }, { TAG_DONE, 0 } };
     struct TagItem ena[] = { { GA_Disabled, FALSE }, { TAG_DONE, 0 } };
 
-    if (g->selected < 0 || g->selected >= (WORD)g->vols->count) { set_status(g, "Select a volume first."); return; }
+    if (g->selected < 0 || g->selected >= (WORD)g->vols->count) { set_status(g, GS(MSG_GUI_SELECT_FIRST)); return; }
     v = &g->vols->v[g->selected];
-    if (v->fskind == FS_UNKNOWN) { set_status(g, "Unsupported filesystem on this partition."); return; }
+    if (v->fskind == FS_UNKNOWN) { set_status(g, GS(MSG_GUI_UNSUPPORTED_FS)); return; }
 
     if (g->have_map) { FsMap_Free(&g->map); g->have_map = FALSE; }
     set_defrag_enabled(g, FALSE);
@@ -343,7 +344,7 @@ static void analyze(struct Gui *g)
     bd = BlockDev_Open(v->devname, v->unit);
     if (!bd) {
         char s[120];
-        AD_SNPRINTF(s, "Cannot open %s unit %lu", v->devname, (unsigned long)v->unit);
+        AD_SNPRINTF(s, GS(MSG_GUI_CANNOT_OPEN_UNIT), v->devname, (unsigned long)v->unit);
         set_status(g, s);
         return;
     }
@@ -409,7 +410,7 @@ static BOOL defrag_move(void *ud, ULONG blk, ULONG n, UBYTE cls)
         FsMap_SetRange(&g->map, blk, n, cls);
         draw_blocks(g, blk, n);
     }
-    return drain_run_msgs(g, "Stopping after the current file...");
+    return drain_run_msgs(g, GS(MSG_GUI_STOPPING_FILE));
 }
 
 /* Seconds since 1978 from a DateStamp, for elapsed-time display. */
@@ -447,12 +448,12 @@ static BOOL sfs_move(void *ud, ULONG src, ULONG dst, ULONG n)
         char s[160], mv[24];
         u->last_secs = secs;
         Volume_SizeString(u->moved, g->map.blocksize, mv, sizeof(mv));
-        AD_SNPRINTF(s, "%s: handler defragmenting, %s moved, %lu min %lu s%s", g->map.volname, mv,
+        AD_SNPRINTF(s, GS(MSG_GUI_SFS_RUNNING), g->map.volname, mv,
                     (unsigned long)(secs / 60), (unsigned long)(secs % 60),
-                    g->stop ? " - stopping after this step" : "");
+                    g->stop ? GS(MSG_GUI_SFS_STOPPING_SUFFIX) : "");
         set_status(g, s);
     }
-    return drain_run_msgs(g, "Stopping after the current step...");
+    return drain_run_msgs(g, GS(MSG_GUI_STOPPING_STEP));
 }
 
 static LONG ask(struct Gui *g, const char *title, const char *body, const char *gadgets)
@@ -471,25 +472,16 @@ static void show_about(struct Gui *g)
     char body[600];
     static char title[64];
     AD_SNPRINTF(body,
-        "AmiDefrag %s\nBuilt: %s\n"
-        "Disk defragmenter for AmigaOS with the classic block map.\n\n"
-        "Files are moved one at a time with a journaled, single-write\n"
-        "commit per file, so the volume stays valid at every moment.\n"
-        "OFS/FFS, PFS3 and SFS defragmentation.\n\n"
-        "A native GadTools application, no dependencies beyond the ROM.\n\n"
-        "Director: John Hertell\n"
-        "Code: Claude Code (Anthropic)\n\n"
-        "https://github.com/ChuckyGang/AmiDefrag\n\n"
-        "MIT License \251 2026 John Hertell",
+        GS(MSG_ABOUT_BODY),
         AMIDEFRAG_VERSION, AmiDefrag_BuildStamp);
-    AD_SNPRINTF(title, "About %s", AMIDEFRAG_VERTITLE);
+    AD_SNPRINTF(title, GS(MSG_ABOUT_TITLE), AMIDEFRAG_VERTITLE);
     {
         struct EasyStruct es;
         es.es_StructSize   = sizeof(es);
         es.es_Flags        = 0;
         es.es_Title        = (UBYTE *)title;
         es.es_TextFormat   = (UBYTE *)body;
-        es.es_GadgetFormat = (UBYTE *)"OK";
+        es.es_GadgetFormat = (UBYTE *)GS(MSG_OK);
         EasyRequestArgs(g->win, &es, NULL, NULL);
     }
 }
@@ -506,27 +498,16 @@ static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
     ULONG frag0 = g->map.frag_files, runs0 = g->map.extra_runs, files0 = g->map.files, secs;
     LONG rc;
 
-    if (!SfsDefrag_Available(v)) { set_status(g, "SFS is defragmented through its handler: the volume must be mounted."); return; }
-    if (!SfsDefrag_Probe(v, &st, err, sizeof(err))) { set_status(g, err); ask(g, "AmiDefrag", err, "OK"); return; }
+    if (!SfsDefrag_Available(v)) { set_status(g, GS(MSG_GUI_SFS_NEEDS_MOUNT)); return; }
+    if (!SfsDefrag_Probe(v, &st, err, sizeof(err))) { set_status(g, err); ask(g, GS(MSG_APPNAME), err, GS(MSG_OK)); return; }
     strncpy(volname, g->map.volname, sizeof(volname) - 1); volname[sizeof(volname) - 1] = '\0';
     AD_SNPRINTF(body,
-        "EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\n"
-        "AmiDefrag will drive the defragmenter built into the\n"
-        "SmartFilesystem handler of %s (%s:). The handler moves the\n"
-        "blocks itself, one transaction-safe step at a time, and the\n"
-        "volume stays mounted and usable meanwhile. It also packs files\n"
-        "together to consolidate free space, so it moves more than the\n"
-        "fragmented files and can take a long time; Stop ends the run\n"
-        "after the current step.\n\n"
-        "Handler: SmartFilesystem %lu.%lu, stack %lu bytes\n"
-        "%lu files, %lu fragmented, %lu extra pieces.\n\n"
-        "Keep a FULL BACKUP anyway. The author accepts NO responsibility\n"
-        "for any loss of data caused by this software.",
+        GS(MSG_SFS_WARNING_BODY),
         volname, v->dosname,
         (unsigned long)(st.version >> 16), (unsigned long)(st.version & 0xFFFF), (unsigned long)st.stack,
         (unsigned long)files0, (unsigned long)frag0, (unsigned long)runs0);
-    if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
-        set_status(g, "Cancelled.");
+    if (ask(g, GS(MSG_WARNING_TITLE), body, GS(MSG_BACKUP_DEFRAGMENT_CANCEL)) != 1) {
+        set_status(g, GS(MSG_CANCELLED));
         return;
     }
 
@@ -542,7 +523,7 @@ static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
 
     if (rc == RETURN_ERROR || rc == RETURN_FAIL) {
         set_status(g, err);
-        ask(g, "AmiDefrag", err, "OK");
+        ask(g, GS(MSG_APPNAME), err, GS(MSG_OK));
         set_defrag_enabled(g, TRUE);
         return;
     }
@@ -557,18 +538,14 @@ static void defragment_sfs(struct Gui *g, struct VolumeInfo *v)
     analyze(g);
     if (!g->have_map) return;
     AD_SNPRINTF(body,
-        "Defragmentation of %s %s.\n\n"
-        "Moved by the handler: %s (%lu blocks) in %lu steps\n"
-        "Time: %lu min %lu s\n\n"
-        "Fragmented files: %lu -> %lu\n"
-        "Extra pieces: %lu -> %lu%s",
-        volname, st.aborted ? "stopped at your request" : "finished",
+        GS(MSG_SFS_RESULT_BODY),
+        volname, st.aborted ? GS(MSG_SFS_RESULT_STOPPED) : GS(MSG_SFS_RESULT_FINISHED),
         moved, (unsigned long)st.moved_blocks, (unsigned long)st.steps,
         (unsigned long)(secs / 60), (unsigned long)(secs % 60),
         (unsigned long)frag0, (unsigned long)g->map.frag_files,
         (unsigned long)runs0, (unsigned long)g->map.extra_runs,
-        st.aborted ? "\nThe volume is consistent; run again to continue." : "");
-    ask(g, "AmiDefrag", body, "OK");
+        st.aborted ? GS(MSG_SFS_RESULT_CONTINUE_SUFFIX) : "");
+    ask(g, GS(MSG_APPNAME), body, GS(MSG_OK));
 }
 
 static void defragment(struct Gui *g)
@@ -583,11 +560,11 @@ static void defragment(struct Gui *g)
     if (!g->have_map || g->map_vol < 0 || g->map_vol >= (WORD)g->vols->count) return;
     v = &g->vols->v[g->map_vol];
     if (v->fskind == FS_SFS) { defragment_sfs(g, v); return; }
-    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { set_status(g, "Only OFS/FFS, PFS3 and SFS volumes can be defragmented in this version."); return; }
-    if (v->is_boot) { set_status(g, "The boot volume is not defragmented in this version."); return; }
+    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { set_status(g, GS(MSG_GUI_ONLY_SUPPORTED_FS)); return; }
+    if (v->is_boot) { set_status(g, GS(MSG_GUI_NO_BOOT_VOLUME)); return; }
 
     bd = BlockDev_Open(v->devname, v->unit);
-    if (!bd) { set_status(g, "Cannot open the device."); return; }
+    if (!bd) { set_status(g, GS(MSG_GUI_CANNOT_OPEN_DEVICE)); return; }
 
     /* dry run first: tells the user what will happen before anything is written */
     memset(&o, 0, sizeof(o));
@@ -596,30 +573,19 @@ static void defragment(struct Gui *g)
     rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
              (bd, v, &o, FfsDefrag_DefaultPlatform(), defrag_log, NULL, g, &st, err, sizeof(err));
     if (rc == RETURN_ERROR || st.candidates == 0) {
-        AD_SNPRINTF(body, "%s", err[0] ? err : "Nothing to defragment.");
+        AD_SNPRINTF(body, "%s", err[0] ? err : GS(MSG_GUI_NOTHING_TO_DO));
         set_status(g, body);
         BlockDev_Close(bd);
         set_defrag_enabled(g, TRUE);
         return;
     }
     AD_SNPRINTF(body,
-        "EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n\n"
-        "AmiDefrag rewrites file data and filesystem structures\n"
-        "on %s (%s:). A bug here can cause permanent data loss.\n"
-        "Make sure you have a FULL BACKUP of this volume before\n"
-        "proceeding. The author accepts NO responsibility for any\n"
-        "loss of data caused by this software.\n\n"
-        "%lu fragmented file(s), %lu blocks.\n"
-        "%lu can be made contiguous directly, %lu have no free run\n"
-        "large enough%s.\n\n"
-        "The volume is inhibited while this runs: nothing else must\n"
-        "write to it. Files are moved one at a time; a crash leaves the\n"
-        "volume valid (the filesystem may validate it on the next mount).",
+        GS(MSG_FFS_WARNING_BODY),
         g->map.volname, v->dosname, (unsigned long)st.candidates, (unsigned long)st.cand_blocks,
         (unsigned long)st.moved, (unsigned long)(st.skipped_space + st.needs_room),
-        v->fskind == FS_PFS ? " (room is made for them by moving other files aside)" : "");
-    if (ask(g, "AmiDefrag - Warning", body, "I have a backup - Defragment|Cancel") != 1) {
-        set_status(g, "Cancelled.");
+        v->fskind == FS_PFS ? GS(MSG_FFS_WARNING_PFS_ROOM_SUFFIX) : "");
+    if (ask(g, GS(MSG_WARNING_TITLE), body, GS(MSG_BACKUP_DEFRAGMENT_CANCEL)) != 1) {
+        set_status(g, GS(MSG_CANCELLED));
         BlockDev_Close(bd);
         set_defrag_enabled(g, TRUE);
         return;
@@ -641,33 +607,28 @@ static void defragment(struct Gui *g)
             Volume_SizeString(st.moved_blocks, g->map.blocksize, moved, sizeof(moved));
             Volume_SizeString(st.moved_aside_blocks, g->map.blocksize, aside, sizeof(aside));
             AD_SNPRINTF(body,
-                "Defragmentation of %s finished.\n\n"
-                "Files made contiguous: %lu of %lu\n"
-                "Data moved: %s (%lu blocks)\n"
-                "Moved aside to make room: %lu run(s), %s\n"
-                "Time: %lu min %lu s\n"
-                "Skipped, no room could be made: %lu\n%s",
+                GS(MSG_FFS_RESULT_BODY),
                 g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
                 moved, (unsigned long)st.moved_blocks,
                 (unsigned long)st.moved_aside, aside,
                 (unsigned long)(secs / 60), (unsigned long)(secs % 60),
                 (unsigned long)st.skipped_space,
-                st.aborted ? "\nStopped at your request; the volume is consistent." : "");
-            ask(g, "AmiDefrag", body, "OK");
+                st.aborted ? GS(MSG_FFS_RESULT_STOPPED_SUFFIX) : "");
+            ask(g, GS(MSG_APPNAME), body, GS(MSG_OK));
         }
     }
 
     if (g->have_map) { FsMap_Recount(&g->map); g->map.frag_files = st.candidates - st.moved; draw_map(g); }
-    AD_SNPRINTF(body, "%s: %lu of %lu file(s) made contiguous (%lu blocks), %lu skipped for space%s%s%s",
+    AD_SNPRINTF(body, GS(MSG_GUI_RUN_SUMMARY),
         g->map.volname, (unsigned long)st.moved, (unsigned long)st.candidates,
         (unsigned long)st.moved_blocks, (unsigned long)st.skipped_space,
-        st.needs_validation ? (v->fskind == FS_PFS ? " - RUN AGAIN TO FINISH" : " - VOLUME NEEDS VALIDATION") : "",
+        st.needs_validation ? (v->fskind == FS_PFS ? GS(MSG_GUI_RUN_AGAIN_SUFFIX) : GS(MSG_GUI_NEEDS_VALIDATION_SUFFIX)) : "",
         err[0] ? " - " : "", err);
     set_status(g, body);
     if (rc == RETURN_FAIL || st.needs_validation)
-        ask(g, "AmiDefrag", v->fskind == FS_PFS
-            ? "The run stopped after writes began.\nThe volume is readable, but one file's move is only\nrecorded in the journal: run AmiDefrag again on this\nvolume to let it finish or undo that move."
-            : "The run stopped after writes began.\nThe bitmap was left marked invalid on purpose:\nthe filesystem will validate the volume on the next mount.\nRun AmiDefrag again afterwards to finish.", "OK");
+        ask(g, GS(MSG_APPNAME), v->fskind == FS_PFS
+            ? GS(MSG_PFS_INTERRUPTED_BODY)
+            : GS(MSG_FFS_INTERRUPTED_BODY), GS(MSG_OK));
     set_defrag_enabled(g, !st.needs_validation && (st.candidates - st.moved) > 0);
 }
 
@@ -690,7 +651,7 @@ static void handle_msg(struct Gui *g, ULONG iclass, UWORD code, struct Gadget *g
         switch (gad->GadgetID) {
         case GID_LIST:    g->selected = (WORD)code; break;
         case GID_ANALYZE: analyze(g); break;
-        case GID_RESCAN:  rescan(g); set_status(g, "Volume list refreshed."); break;
+        case GID_RESCAN:  rescan(g); set_status(g, GS(MSG_GUI_LIST_REFRESHED)); break;
         case GID_DEFRAG:  if (!g->scanning) defragment(g); break;
         case GID_STOP:    break;   /* only meaningful inside a run; handled by the callbacks */
         case GID_ABOUT:   show_about(g); break;
@@ -746,19 +707,19 @@ static BOOL build_window(struct Gui *g)
     y += lv_h + pad;
 
     ng.ng_TopEdge = y; ng.ng_Height = btn_h; ng.ng_Width = btn_w;
-    ng.ng_LeftEdge = g->bor_l + pad;            ng.ng_GadgetText = "_Analyze";    ng.ng_GadgetID = GID_ANALYZE;
+    ng.ng_LeftEdge = g->bor_l + pad;            ng.ng_GadgetText = GS(MSG_BTN_ANALYZE);    ng.ng_GadgetID = GID_ANALYZE;
     { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = g->analyze_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
-    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Rescan";     ng.ng_GadgetID = GID_RESCAN;
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = GS(MSG_BTN_RESCAN);     ng.ng_GadgetID = GID_RESCAN;
     { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
-    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Defragment"; ng.ng_GadgetID = GID_DEFRAG;
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = GS(MSG_BTN_DEFRAGMENT); ng.ng_GadgetID = GID_DEFRAG;
     { struct TagItem t[] = { { GA_Disabled, TRUE }, { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = g->defrag_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
-    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "_Stop";       ng.ng_GadgetID = GID_STOP;
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = GS(MSG_BTN_STOP);       ng.ng_GadgetID = GID_STOP;
     { struct TagItem t[] = { { GA_Disabled, TRUE }, { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = g->stop_gad = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
-    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = "A_bout";      ng.ng_GadgetID = GID_ABOUT;
+    ng.ng_LeftEdge += btn_w + pad;              ng.ng_GadgetText = GS(MSG_BTN_ABOUT);      ng.ng_GadgetID = GID_ABOUT;
     { struct TagItem t[] = { { GT_Underscore, '_' }, { TAG_DONE, 0 } };
       prev = CreateGadgetA(BUTTON_KIND, prev, &ng, t); if (!prev) return FALSE; }
     y += btn_h + pad;
@@ -811,8 +772,8 @@ int gui_run(void)
     if (!build_window(g)) { rc = 20; goto done; }
 
     redraw_all(g);
-    set_status(g, g->vols->count ? "Select a volume and press Analyze."
-                                 : "No partitions found in the DOS device list.");
+    set_status(g, g->vols->count ? GS(MSG_GUI_SELECT_AND_ANALYZE)
+                                 : GS(MSG_GUI_NO_PARTITIONS));
 
     while (!g->quit) {
         struct IntuiMessage *imsg;

@@ -2,6 +2,7 @@
  * fsmap.c - block map storage, cell condensation and the dispatcher.
  */
 #include "fsmap_int.h"
+#include "locale_support.h"
 
 void FsMap_Set(struct FsMap *m, ULONG blk, UBYTE cls)
 {
@@ -56,9 +57,9 @@ char FsMap_ClassChar(UBYTE cls)
 
 const char *FsMap_ClassName(UBYTE cls)
 {
-    static const char *const nm[BLK_CLASSES] =
-        { "free", "data", "fragmented", "system", "reserved", "unknown" };
-    return cls < BLK_CLASSES ? nm[cls] : "?";
+    static const WORD id[BLK_CLASSES] =
+        { MSG_CLASS_FREE, MSG_CLASS_DATA, MSG_CLASS_FRAG, MSG_CLASS_SYSTEM, MSG_CLASS_RESERVED, MSG_CLASS_UNKNOWN };
+    return cls < BLK_CLASSES ? GS(id[cls]) : "?";
 }
 
 BOOL ustack_push(struct UStack *s, ULONG x)
@@ -115,14 +116,14 @@ BOOL FsMap_Build(struct BlockDev *bd, const struct VolumeInfo *v,
     }
 
     if (m->nblocks == 0 || v->fskind == FS_UNKNOWN) {
-        strncpy(m->note, v->fskind == FS_UNKNOWN ? "unsupported filesystem type"
-                                                 : "empty partition", sizeof(m->note) - 1);
+        strncpy(m->note, v->fskind == FS_UNKNOWN ? GS(MSG_NOTE_UNSUPPORTED_FS)
+                                                 : GS(MSG_NOTE_EMPTY_PARTITION), sizeof(m->note) - 1);
         return FALSE;
     }
 
     m->nib = (UBYTE *)AllocVec((m->nblocks + 1) / 2, MEMF_PUBLIC | MEMF_CLEAR);
     if (!m->nib) {
-        snprintf(m->note, sizeof(m->note), "out of memory (%lu KB needed for the map)",
+        snprintf(m->note, sizeof(m->note), GS(MSG_NOTE_NO_MEMORY_MAP),
                  (unsigned long)(((m->nblocks + 1) / 2 + 1023) / 1024));
         return FALSE;
     }
@@ -133,8 +134,8 @@ BOOL FsMap_Build(struct BlockDev *bd, const struct VolumeInfo *v,
     case FS_SFS: ok = SfsMap_Build(&c); break;
     default:     ok = FALSE; break;
     }
-    if (c.aborted) { strncpy(m->note, "cancelled", sizeof(m->note) - 1); ok = FALSE; }
+    if (c.aborted) { strncpy(m->note, GS(MSG_NOTE_CANCELLED), sizeof(m->note) - 1); ok = FALSE; }
     if (ok) FsMap_Recount(m);
-    else { FsMap_Free(m); if (!m->note[0]) strncpy(m->note, "scan failed", sizeof(m->note) - 1); }
+    else { FsMap_Free(m); if (!m->note[0]) strncpy(m->note, GS(MSG_NOTE_SCAN_FAILED), sizeof(m->note) - 1); }
     return ok;
 }

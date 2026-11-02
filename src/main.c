@@ -28,6 +28,7 @@
 #include "cli.h"
 #include "gui.h"
 #include "version.h"
+#include "locale_support.h"
 
 /* "Version AmiDefrag" string, kept alive through a volatile read below. */
 const char amidefrag_ver[] = AMIDEFRAG_VERSTRING;
@@ -102,6 +103,7 @@ static int amidefrag_main(void)
 
     DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
     if (!DOSBase) goto cleanup;
+    LocaleOpen();
 
     {
         struct Process *proc = (struct Process *)FindTask(NULL);
@@ -119,6 +121,7 @@ static int amidefrag_main(void)
     result = gui_run();
 
 cleanup:
+    LocaleClose();
     if (GadToolsBase)  CloseLibrary(GadToolsBase);
     if (GfxBase)       CloseLibrary((struct Library *)GfxBase);
     if (IntuitionBase) CloseLibrary((struct Library *)IntuitionBase);

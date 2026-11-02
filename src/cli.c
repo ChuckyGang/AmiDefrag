@@ -20,6 +20,7 @@
 
 extern BOOL AmiDefrag_Debug;
 #include "version.h"
+#include "locale_support.h"
 
 #define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,FILES/S,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
 enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_FILES, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_COUNT };
@@ -46,7 +47,7 @@ static BOOL cli_confirm(void)
 {
     char buf[16];
     LONG n;
-    out("Type YES to defragment this volume: ");
+    out(GS(MSG_CLI_TYPE_YES));
     Flush(Output());
     n = Read(Input(), buf, sizeof(buf) - 1);
     if (n <= 0) return FALSE;
@@ -65,13 +66,11 @@ static LONG run_defrag_sfs(struct BlockDev *bd, const struct VolumeInfo *v, BOOL
     LONG rc;
 
     if (dry) {
-        out("DRYRUN: on SFS the handler's built-in defragmenter decides the moves, so there\n"
-            "is nothing to preview. It also packs files together to consolidate free space.\n");
+        out(GS(MSG_CLI_SFS_DRYRUN));
         return RETURN_WARN;
     }
     if (!SfsDefrag_Available(v)) {
-        out("DEFRAG: SFS is defragmented through the SmartFilesystem handler, so the volume\n"
-            "must be mounted; image files stay map-only.\n");
+        out(GS(MSG_CLI_SFS_NEEDS_MOUNT));
         return RETURN_ERROR;
     }
     if (!FsMap_Build(bd, v, &map, cli_progress, NULL)) { outf("%s: %s\n", v->dosname, map.note); return RETURN_WARN; }
@@ -79,24 +78,18 @@ static LONG run_defrag_sfs(struct BlockDev *bd, const struct VolumeInfo *v, BOOL
     nblocks = map.nblocks; bsize = map.blocksize;
     FsMap_Free(&map);
     if (!SfsDefrag_Probe(v, &st, err, sizeof(err))) { outf("%s\n", err); return RETURN_ERROR; }
-    outf("Handler: SmartFilesystem %lu.%lu, %lu blocks of %lu bytes, task stack %lu bytes\n",
+    outf(GS(MSG_CLI_SFS_HANDLER),
          (unsigned long)(st.version >> 16), (unsigned long)(st.version & 0xFFFF),
          (unsigned long)st.total_blocks, (unsigned long)st.block_size, (unsigned long)st.stack);
     if (!force) {
-        outf("EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n"
-             "AmiDefrag drives the defragmenter built into the SmartFilesystem handler of\n"
-             "%s (%s). The handler moves the blocks itself, one transaction-safe step at a\n"
-             "time; the volume stays mounted and usable. It also consolidates free space, so\n"
-             "it moves more than the fragmented files and can take long. Ctrl-C stops it\n"
-             "after the current step. Keep a FULL BACKUP anyway; the author accepts no\n"
-             "responsibility for any loss of data.\n", v->dosname, v->devname);
-        if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
+        outf(GS(MSG_CLI_SFS_WARNING), v->dosname, v->devname);
+        if (!cli_confirm()) { out(GS(MSG_CLI_CANCELLED)); return RETURN_WARN; }
     }
     rc = SfsDefrag_Run(v, nblocks, bsize, cli_log, cli_sfs_move, NULL, &st, err, sizeof(err));
     if (err[0]) outf("%s\n", err);
-    if (st.aborted) out("Stopped at your request (Ctrl-C) after the current step; the volume is consistent.\n");
-    outf("%s: %lu blocks moved by the handler in %lu steps (%lu moves)\n",
-         rc == RETURN_OK ? "Done" : "Stopped", (unsigned long)st.moved_blocks,
+    if (st.aborted) out(GS(MSG_CLI_SFS_STOPPED));
+    outf(GS(MSG_CLI_SFS_DONE),
+         rc == RETURN_OK ? GS(MSG_CLI_DONE) : GS(MSG_CLI_STOPPED), (unsigned long)st.moved_blocks,
          (unsigned long)st.steps, (unsigned long)st.moves);
     if ((rc == RETURN_OK || rc == RETURN_WARN) && FsMap_Build(bd, v, &map, cli_progress, NULL)) {
         print_stats(v, &map);
@@ -113,33 +106,28 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
     LONG rc;
 
     if (v->fskind == FS_SFS) return run_defrag_sfs(bd, v, dry, force);
-    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { out("DEFRAG: only OFS/FFS, PFS3 and SFS volumes in this version.\n"); return RETURN_ERROR; }
+    if (v->fskind != FS_FFS && v->fskind != FS_PFS) { out(GS(MSG_CLI_ONLY_SUPPORTED_FS)); return RETURN_ERROR; }
     memset(&o, 0, sizeof(o));
     o.dry_run = dry;
     if (!dry && !force) {
-        outf("EXPERIMENTAL SOFTWARE - UNDER DEVELOPMENT\n"
-             "AmiDefrag rewrites file data and filesystem structures on %s (%s).\n"
-             "A bug here can cause permanent data loss. Make sure you have a FULL BACKUP.\n"
-             "The author accepts no responsibility for any loss of data.\n"
-             "Fragmented files are moved one at a time; the volume is inhibited while this\n"
-             "runs, so nothing else must write to it.\n", v->dosname, v->devname);
-        if (!cli_confirm()) { out("Cancelled.\n"); return RETURN_WARN; }
+        outf(GS(MSG_CLI_WARNING), v->dosname, v->devname);
+        if (!cli_confirm()) { out(GS(MSG_CLI_CANCELLED)); return RETURN_WARN; }
     }
     rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
              (bd, v, &o, FfsDefrag_DefaultPlatform(), cli_log, dry ? NULL : cli_move, NULL, &st, err, sizeof(err));
     if (err[0]) outf("%s\n", err);
-    if (st.aborted) out("Stopped at your request (Ctrl-C) after the current file; the volume is consistent.\n");
-    outf("%s: %lu fragmented, %lu %s (%lu blocks), %lu skipped for space, %lu skipped with errors%s\n",
-         dry ? "Dry run" : "Done", (unsigned long)st.candidates, (unsigned long)st.moved,
-         dry ? "would move" : "moved", (unsigned long)st.moved_blocks,
+    if (st.aborted) out(GS(MSG_CLI_FILE_STOPPED));
+    outf(GS(MSG_CLI_RUN_SUMMARY),
+         dry ? GS(MSG_CLI_DRY_RUN) : GS(MSG_CLI_DONE), (unsigned long)st.candidates, (unsigned long)st.moved,
+         dry ? GS(MSG_CLI_WOULD_MOVE) : GS(MSG_CLI_MOVED), (unsigned long)st.moved_blocks,
          (unsigned long)st.skipped_space, (unsigned long)st.skipped_error,
-         st.needs_validation ? (v->fskind == FS_PFS ? " - RUN AGAIN TO FINISH (journal)" : " - VOLUME NEEDS VALIDATION") : "");
+         st.needs_validation ? (v->fskind == FS_PFS ? GS(MSG_CLI_RUN_AGAIN_SUFFIX) : GS(MSG_CLI_NEEDS_VALIDATION_SUFFIX)) : "");
     if (st.needs_room)
-        outf("%lu file(s) have no free run large enough; the live run makes room by moving neighbours aside.\n",
+        outf(GS(MSG_CLI_NEEDS_ROOM),
              (unsigned long)st.needs_room);
     if (st.moved_aside)
-        outf("Moved aside to make room: %lu run(s), %lu blocks\n", (unsigned long)st.moved_aside, (unsigned long)st.moved_aside_blocks);
-    outf("Device I/O: %lu blocks read, %lu written\n", (unsigned long)bd->reads, (unsigned long)bd->writes);
+        outf(GS(MSG_CLI_MOVED_ASIDE), (unsigned long)st.moved_aside, (unsigned long)st.moved_aside_blocks);
+    outf(GS(MSG_CLI_DEVICE_IO), (unsigned long)bd->reads, (unsigned long)bd->writes);
     return rc;
 }
 
@@ -176,14 +164,14 @@ static void list_volumes(const struct VolumeList *vl)
 {
     UWORD i;
     char fs[32], sz[24];
-    if (vl->count == 0) { out("No partitions found.\n"); return; }
-    out("Name   Volume            Filesystem        Size      Device\n");
+    if (vl->count == 0) { out(GS(MSG_CLI_NO_PARTITIONS)); return; }
+    out(GS(MSG_CLI_LIST_HEADER));
     for (i = 0; i < vl->count; i++) {
         const struct VolumeInfo *v = &vl->v[i];
         Volume_FsName(v->dostype, fs, sizeof(fs));
         Volume_SizeString(v->num_blocks, v->sector_size, sz, sizeof(sz));
-        outf("%-6s %-17s %-17s %-9s %s unit %lu%s\n", v->dosname, v->volname, fs, sz,
-             v->devname, (unsigned long)v->unit, v->mounted ? "" : " (not mounted)");
+        outf(GS(MSG_CLI_LIST_ROW), v->dosname, v->volname, fs, sz,
+             v->devname, (unsigned long)v->unit, v->mounted ? "" : GS(MSG_CLI_NOT_MOUNTED_SUFFIX));
     }
 }
 
@@ -199,7 +187,7 @@ static void print_class(const struct FsMap *m, UBYTE cls)
     char sz[24];
     ULONG p = pct10(m->count[cls], m->nblocks);
     Volume_SizeString(m->count[cls], m->blocksize, sz, sizeof(sz));
-    outf("  %c %-11s %10lu blocks  %9s  %3lu.%lu%%\n", FsMap_ClassChar(cls),
+    outf(GS(MSG_CLI_CLASS_ROW), FsMap_ClassChar(cls),
          FsMap_ClassName(cls), (unsigned long)m->count[cls], sz,
          (unsigned long)(p / 10), (unsigned long)(p % 10));
 }
@@ -209,21 +197,21 @@ static void print_stats(const struct VolumeInfo *v, const struct FsMap *m)
     char sz[24];
     UBYTE c;
     Volume_SizeString(m->nblocks, m->blocksize, sz, sizeof(sz));
-    outf("Volume %s (%s:)  %s  %s, %lu blocks of %lu bytes\n",
+    outf(GS(MSG_CLI_VOLUME_HEADER),
          m->volname, v->dosname, m->fsname, sz,
          (unsigned long)m->nblocks, (unsigned long)m->blocksize);
     for (c = 0; c < BLK_CLASSES; c++) print_class(m, c);
     {
         ULONG p = pct10(m->frag_files, m->files);
-        outf("Files: %lu, fragmented: %lu (%lu.%lu%%), extra fragments: %lu, worst file: %lu pieces\n",
+        outf(GS(MSG_CLI_FILES_LINE),
              (unsigned long)m->files, (unsigned long)m->frag_files,
              (unsigned long)(p / 10), (unsigned long)(p % 10),
              (unsigned long)m->extra_runs, (unsigned long)m->worst_runs);
     }
-    if (m->dirs) outf("Directories: %lu\n", (unsigned long)m->dirs);
+    if (m->dirs) outf(GS(MSG_CLI_DIRECTORIES), (unsigned long)m->dirs);
     if (m->fskind == FS_FFS)
-        outf("Bitmap flag: %s\n", m->bitmap_valid ? "valid" : "INVALID (volume needs validation)");
-    if (m->note[0]) outf("Note: %s\n", m->note);
+        outf(GS(MSG_CLI_BITMAP_FLAG), m->bitmap_valid ? GS(MSG_CLI_BITMAP_VALID) : GS(MSG_CLI_BITMAP_INVALID));
+    if (m->note[0]) outf(GS(MSG_CLI_NOTE), m->note);
 }
 
 /* FILES: the fragmented files by path (all files with DEBUG).  PFS3 only
@@ -292,19 +280,19 @@ static void print_files(struct BlockDev *bd, const struct VolumeInfo *v, BOOL al
     struct FileList fl;
     ULONG i;
     static char root[] = "";
-    if (v->fskind != FS_PFS) { out("FILES: PFS3 volumes only in this version.\n"); return; }
+    if (v->fskind != FS_PFS) { out(GS(MSG_CLI_FILES_PFS_ONLY)); return; }
     memset(&pv, 0, sizeof(pv));
     memset(&fl, 0, sizeof(fl));
-    if (!pfs_open(&pv, bd, v)) { outf("FILES: %s\n", pv.err); return; }
+    if (!pfs_open(&pv, bd, v)) { outf(GS(MSG_CLI_FILES_ERROR), pv.err); return; }
     fl.v = &pv; fl.all = all;
     fl.dir_an = (ULONG *)AllocVec(64 * sizeof(ULONG), MEMF_PUBLIC);
     fl.dir_path = (char **)AllocVec(64 * sizeof(char *), MEMF_PUBLIC);
-    if (!fl.dir_an || !fl.dir_path) { out("FILES: out of memory\n"); goto done; }
+    if (!fl.dir_an || !fl.dir_path) { out(GS(MSG_CLI_FILES_NO_MEMORY)); goto done; }
     fl.cap = 64;
     fl.dir_an[0] = PFS_ANODE_ROOTDIR; fl.dir_path[0] = root; fl.ndirs = 1;
-    outf("%s (pieces, blocks, path):\n", all ? "Files" : "Fragmented files");
+    outf(GS(MSG_CLI_FILES_HEADER), all ? GS(MSG_CLI_FILES_ALL) : GS(MSG_CLI_FILES_FRAGMENTED));
     pfs_walk(&pv, files_cb, &fl, NULL);
-    outf("%lu file(s) listed\n", (unsigned long)fl.listed);
+    outf(GS(MSG_CLI_FILES_LISTED), (unsigned long)fl.listed);
 done:
     for (i = 1; i < fl.ndirs; i++) FreeVec(fl.dir_path[i]);
     if (fl.dir_an) FreeVec(fl.dir_an);
@@ -322,7 +310,7 @@ static void print_map(const struct FsMap *m, ULONG width)
     per = (m->nblocks + width * 16 - 1) / (width * 16);
     if (per == 0) per = 1;
     cells = (m->nblocks + per - 1) / per;
-    outf("\nBlock map, %lu blocks per character:\n", (unsigned long)per);
+    outf(GS(MSG_CLI_MAP_HEADER), (unsigned long)per);
     for (i = 0; i < cells; i++) {
         line[i % width] = FsMap_ClassChar(FsMap_Cell(m, i * per, per));
         if ((i % width) == width - 1 || i == cells - 1) {
@@ -331,7 +319,7 @@ static void print_map(const struct FsMap *m, ULONG width)
             out(line);
         }
     }
-    out("Legend:");
+    out(GS(MSG_CLI_LEGEND));
     for (c = 0; c < BLK_CLASSES; c++) outf("  %c %s", FsMap_ClassChar(c), FsMap_ClassName(c));
     out("\n");
 }
@@ -390,12 +378,12 @@ LONG cli_run(void)
     }
 
     vl = (struct VolumeList *)AllocVec(sizeof(*vl), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!vl) { FreeArgs(rda); out("Out of memory\n"); return RETURN_FAIL; }
+    if (!vl) { FreeArgs(rda); out(GS(MSG_CLI_NO_MEMORY)); return RETURN_FAIL; }
 
     if (args[A_IMAGE]) {
         char err[80];
         bd = BlockDev_OpenFile((const char *)args[A_IMAGE]);
-        if (!bd) { outf("Cannot open image %s\n", (const char *)args[A_IMAGE]); rc = RETURN_ERROR; goto done; }
+        if (!bd) { outf(GS(MSG_CLI_CANNOT_OPEN_IMAGE), (const char *)args[A_IMAGE]); rc = RETURN_ERROR; goto done; }
         if (!Volume_EnumerateImage(bd, vl, err, sizeof(err))) { outf("%s: %s\n", bd->devname, err); rc = RETURN_ERROR; goto done; }
     } else {
         Volume_EnumerateMounted(vl);
@@ -405,11 +393,11 @@ LONG cli_run(void)
     if (args[A_LIST]) { list_volumes(vl); goto done; }
 
     v = pick(vl, args[A_IMAGE] ? (const char *)args[A_PART] : (const char *)args[A_VOLUME]);
-    if (!v) { out("Partition not found. Use LIST to see what is there.\n"); rc = RETURN_ERROR; goto done; }
+    if (!v) { out(GS(MSG_CLI_PARTITION_NOT_FOUND)); rc = RETURN_ERROR; goto done; }
 
     if (!bd) {
         bd = BlockDev_Open(v->devname, v->unit);
-        if (!bd) { outf("Cannot open %s unit %lu\n", v->devname, (unsigned long)v->unit); rc = RETURN_ERROR; goto done; }
+        if (!bd) { outf(GS(MSG_CLI_CANNOT_OPEN_UNIT), v->devname, (unsigned long)v->unit); rc = RETURN_ERROR; goto done; }
     }
 
     /* DEFRAG goes straight to the engine: it has its own checks and its

@@ -82,7 +82,14 @@ src_c   := $(wildcard src/*.c)
 src_obj := $(addprefix obj/,$(patsubst src/%.c,%.o,$(src_c)))
 objects := $(src_obj) $(TC_SUPPORT_OBJ)
 
-.PHONY: all clean icon FORCE amiga linux testdisk
+# --- Localization (locale.library catalogs) ----------------------------------
+# catalogs/AmiDefrag.cd is the single source of truth for translatable strings.
+# It generates src/amidefrag_strings.h (ids + built-in English defaults).
+CD_FILE   := catalogs/AmiDefrag.cd
+STRINGS_H := src/amidefrag_strings.h
+GENCAT    := support/gencat.py
+
+.PHONY: all clean icon FORCE amiga linux testdisk strings catalog-template catalog
 
 amiga: all
 linux:
@@ -95,6 +102,30 @@ all: $(program) $(program).info
 # build.o embeds __DATE__/__TIME__ - force-rebuild every invocation.
 obj/build.o: FORCE
 FORCE:
+
+$(STRINGS_H): $(CD_FILE) $(GENCAT)
+	$(info Generating $@ from $<)
+	@python3 $(GENCAT) header $< $@
+
+# Every object depends on the generated header (pulled in via locale_support.h).
+$(src_obj): $(STRINGS_H)
+
+# Regenerate the string header on demand.
+strings: $(STRINGS_H)
+
+# Emit a fresh translation template:  make catalog-template LANG=deutsch
+LANG ?= deutsch
+catalog-template: $(CD_FILE) $(GENCAT)
+	$(info Generating catalogs/$(LANG).ct)
+	@python3 $(GENCAT) ct $(CD_FILE) catalogs/$(LANG).ct $(LANG)
+
+# Compile a finished translation into a binary catalog:
+#   make catalog LANG=deutsch        (reads catalogs/deutsch.ct)
+# Install the result as LOCALE:Catalogs/deutsch/AmiDefrag.catalog
+catalog: $(CD_FILE) $(GENCAT)
+	$(info Compiling catalogs/$(LANG)/AmiDefrag.catalog)
+	@mkdir -p catalogs/$(LANG)
+	@python3 $(GENCAT) catalog $(CD_FILE) catalogs/$(LANG).ct catalogs/$(LANG)/AmiDefrag.catalog
 
 icon: $(program).info
 
@@ -135,6 +166,7 @@ endif
 clean:
 	$(info Cleaning...)
 	@find obj out -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null || true
+	@rm -f $(STRINGS_H)
 
 -include $(src_obj:.o=.d)
 ifeq ($(TOOLCHAIN),bartman)
