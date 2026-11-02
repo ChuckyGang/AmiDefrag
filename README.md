@@ -169,7 +169,7 @@ Ctrl-C does the same.
 CLI (Amiga and Linux share the template):
 
 ```
-AmiDefrag DH0:                      analyse a mounted volume
+AmiDefrag DH0:                      analyse a mounted volume (device or volume name)
 AmiDefrag DH0: MAP WIDTH=72         ... with an ASCII block map
 AmiDefrag LIST                      list mounted partitions
 AmiDefrag IMAGE=disk.hdf LIST       partitions of an image (Linux: IMAGE=/path)

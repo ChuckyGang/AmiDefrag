@@ -337,6 +337,18 @@ static void print_map(const struct FsMap *m, ULONG width)
 }
 
 /* Find a partition by DOS name ("DH1", "DH1:") or by index ("1"). */
+static BOOL name_eq(const char *a, const char *b)
+{
+    while (*a || *b) {
+        char ca = *a++, cb = *b++;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return FALSE;
+    }
+    return TRUE;
+}
+
+/* Device name (HD0:) first, then mounted volume name (Work:), then list index. */
 static const struct VolumeInfo *pick(const struct VolumeList *vl, const char *name)
 {
     UWORD i;
@@ -345,17 +357,10 @@ static const struct VolumeInfo *pick(const struct VolumeList *vl, const char *na
     if (!name) return vl->count ? &vl->v[0] : NULL;
     while (name[n] && name[n] != ':' && n < sizeof(want) - 1) { want[n] = name[n]; n++; }
     want[n] = '\0';
-    for (i = 0; i < vl->count; i++) {
-        const char *a = vl->v[i].dosname, *b = want;
-        BOOL eq = TRUE;
-        while (*a || *b) {
-            char ca = *a++, cb = *b++;
-            if (ca >= 'a' && ca <= 'z') ca -= 32;
-            if (cb >= 'a' && cb <= 'z') cb -= 32;
-            if (ca != cb) { eq = FALSE; break; }
-        }
-        if (eq) return &vl->v[i];
-    }
+    for (i = 0; i < vl->count; i++)
+        if (name_eq(vl->v[i].dosname, want)) return &vl->v[i];
+    for (i = 0; i < vl->count; i++)
+        if (vl->v[i].volname[0] && name_eq(vl->v[i].volname, want)) return &vl->v[i];
     if (want[0] >= '0' && want[0] <= '9') {
         ULONG ix = strtoul(want, NULL, 10);
         if (ix < vl->count) return &vl->v[ix];
