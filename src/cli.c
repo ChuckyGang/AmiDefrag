@@ -22,8 +22,8 @@ extern BOOL AmiDefrag_Debug;
 #include "version.h"
 #include "locale_support.h"
 
-#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,FILES/S,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S"
-enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_FILES, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_COUNT };
+#define TEMPLATE "VOLUME,IMAGE/K,PART/K,LIST/S,MAP/S,WIDTH/N,FILES/S,DEBUG/S,DEFRAG/S,DRYRUN/S,FORCE/S,LIVE/S"
+enum { A_VOLUME, A_IMAGE, A_PART, A_LIST, A_MAP, A_WIDTH, A_FILES, A_DEBUG, A_DEFRAG, A_DRYRUN, A_FORCE, A_LIVE, A_COUNT };
 
 static void out(const char *s) { PutStr((CONST_STRPTR)s); }
 
@@ -98,7 +98,7 @@ static LONG run_defrag_sfs(struct BlockDev *bd, const struct VolumeInfo *v, BOOL
     return rc;
 }
 
-static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry, BOOL force)
+static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry, BOOL force, BOOL live)
 {
     struct FfsDefragOpts  o;
     struct FfsDefragStats st;
@@ -109,6 +109,8 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
     if (v->fskind != FS_FFS && v->fskind != FS_PFS) { out(GS(MSG_CLI_ONLY_SUPPORTED_FS)); return RETURN_ERROR; }
     memset(&o, 0, sizeof(o));
     o.dry_run = dry;
+    o.live_boot = live;
+    if (v->is_boot && !dry && !live) { outf(GS(MSG_CLI_BOOT_NEEDS_LIVE), v->dosname); return RETURN_ERROR; }
     if (!dry && !force) {
         outf(GS(MSG_CLI_WARNING), v->dosname, v->devname);
         if (!cli_confirm()) { out(GS(MSG_CLI_CANCELLED)); return RETURN_WARN; }
@@ -122,6 +124,8 @@ static LONG run_defrag(struct BlockDev *bd, const struct VolumeInfo *v, BOOL dry
          dry ? GS(MSG_CLI_WOULD_MOVE) : GS(MSG_CLI_MOVED), (unsigned long)st.moved_blocks,
          (unsigned long)st.skipped_space, (unsigned long)st.skipped_error,
          st.needs_validation ? (v->fskind == FS_PFS ? GS(MSG_CLI_RUN_AGAIN_SUFFIX) : GS(MSG_CLI_NEEDS_VALIDATION_SUFFIX)) : "");
+    if (st.skipped_open)
+        outf(GS(MSG_CLI_OPEN_SKIPPED), (unsigned long)st.skipped_open);
     if (st.needs_room)
         outf(GS(MSG_CLI_NEEDS_ROOM),
              (unsigned long)st.needs_room);
@@ -403,7 +407,7 @@ LONG cli_run(void)
     /* DEFRAG goes straight to the engine: it has its own checks and its
      * journal recovery must run even when the map cannot be built. */
     if (args[A_DEFRAG] || args[A_DRYRUN]) {
-        rc = run_defrag(bd, v, args[A_DRYRUN] != 0, args[A_FORCE] != 0);
+        rc = run_defrag(bd, v, args[A_DRYRUN] != 0, args[A_FORCE] != 0, args[A_LIVE] != 0);
         goto done;
     }
     if (!FsMap_Build(bd, v, &map, cli_progress, NULL)) {

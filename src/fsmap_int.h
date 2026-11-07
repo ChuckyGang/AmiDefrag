@@ -55,6 +55,10 @@ struct UStack { ULONG *v; ULONG n, cap; };
 BOOL ustack_push(struct UStack *s, ULONG x);
 void ustack_free(struct UStack *s);
 
+/* Sorted ULONG set: sort once, then binary search. */
+void keyset_sort(ULONG *k, ULONG n);
+BOOL keyset_has(const ULONG *k, ULONG n, ULONG key);
+
 BOOL FfsMap_Build(struct FsCtx *c);
 BOOL PfsMap_Build(struct FsCtx *c);
 BOOL SfsMap_Build(struct FsCtx *c);

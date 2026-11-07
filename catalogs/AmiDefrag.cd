@@ -354,14 +354,29 @@ Partition not found. Use LIST to see what is there.\n
 MSG_CLI_CANNOT_OPEN_UNIT
 Cannot open %s unit %lu\n
 ;
+MSG_GUI_BOOT_LIVE_GADGETS
+Live mode|Cancel
+;
+MSG_GUI_OPEN_SKIPPED_SUFFIX
+ - %lu open file(s) skipped
+;
+MSG_FFS_RESULT_OPEN_SKIPPED
+\n%lu file(s) were skipped because they are open.
+;
+MSG_CLI_OPEN_SKIPPED
+%lu open file(s) skipped (locked in the handler)\n
+;
+MSG_CLI_BOOT_NEEDS_LIVE
+%s: is the boot volume. Add LIVE to defragment it while the system runs from it\n(open files are skipped, everything else is locked out of the volume meanwhile),\nor boot the AmiDefrag floppy and run it from there.\n
+;
 ;==========================================================================
 ; Boot volume (appended 2026-11-07, ids stay positional)
 ;==========================================================================
 MSG_GUI_BOOT_SUFFIX
- - BOOT VOLUME: cannot defragment, click Defragment for why
+ - BOOT VOLUME: live mode only, click Defragment
 ;
 MSG_GUI_BOOT_TITLE
 AmiDefrag - Boot volume
 ;
 MSG_GUI_BOOT_BODY
-%s (%s:) is the volume the system is running from (SYS:).\n\nAmiDefrag has to inhibit a volume for the whole run so that\nnothing else can write to it while files are moved. The OS,\nWorkbench, LIBS: and AmiDefrag itself are loaded from this\nvolume, so it cannot be inhibited while the system runs.\n\nTo defragment it, boot from another partition or a floppy\nand run AmiDefrag from there. Analysis works as usual.
+%s (%s:) is the volume the system is running from (SYS:).\n\nAmiDefrag inhibits a volume for the whole run. While it works,\nnothing else can use SYS:: programs that touch it get errors or\n'please insert volume' requesters until the run is over.\n\nLIVE MODE skips every file that is currently open (the system\nkeeps state for open files that a move would break) and\ndefragments the rest. Close other programs first. A full\nbackup is still required.\n\nThe safer way is the AmiDefrag boot floppy (ADF in the\ndownload): boot it and defragment %s from there.

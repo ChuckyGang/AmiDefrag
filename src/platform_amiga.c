@@ -93,7 +93,44 @@ static BOOL pf_delete_journal(void *ud, const struct VolumeInfo *v)
     return ok;
 }
 
-static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL, NULL };
+/* Keys of every lock the handler holds on the volume.  Called after the
+ * inhibit: FFS moves its LockQueue into the volume node's dol_LockList
+ * then (ForgetLocks/StashLocks in main.asm), PFS3 links its file entries
+ * there (DiskRemoveSequence in volume.c).  Open files have a lock too
+ * (FFS: the rwdata's private lock, PFS3: the fileentry), so this is the
+ * complete set of objects whose cached state must not be invalidated.
+ * The node pointer was taken at enumeration; it is only dereferenced
+ * while it is still found on the DosList (a volume without locks is
+ * forgotten by FFS on inhibit, node and all). */
+static ULONG pf_open_keys(void *ud, const struct VolumeInfo *v, ULONG *keys, ULONG max)
+{
+    struct DosList *dol, *d;
+    ULONG n = 0;
+    (void)ud;
+    if (no_handler(v) || !v->volnode) return 0;
+    dol = LockDosList(LDF_VOLUMES | LDF_READ);
+    d = dol;
+    while ((d = NextDosEntry(d, LDF_VOLUMES)) != NULL) {
+        if (d != (struct DosList *)v->volnode) continue;
+        Forbid();
+        {
+            BPTR l = d->dol_misc.dol_volume.dol_LockList;
+            ULONG guard = 0;
+            while (l && guard++ < 100000UL) {
+                struct FileLock *fl = (struct FileLock *)BADDR(l);
+                if (n < max) keys[n] = fl->fl_Key;
+                n++;
+                l = fl->fl_Link;
+            }
+        }
+        Permit();
+        break;
+    }
+    UnLockDosList(LDF_VOLUMES | LDF_READ);
+    return n;
+}
+
+static const struct FfsDefragPlatform amiga_pf = { pf_inhibit, pf_create_journal, pf_delete_journal, NULL, NULL, pf_open_keys };
 
 const struct FfsDefragPlatform *FfsDefrag_DefaultPlatform(void)
 {

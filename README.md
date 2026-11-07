@@ -13,7 +13,8 @@ built so that the disk is **never left in a dangerous state**.
 ## Download
 
 **[Latest build](https://github.com/ChuckyGang/AmiDefrag/releases/latest)** — the
-Amiga executable with icon in an LHA archive, plus the native Linux CLI
+Amiga executable with icon in an LHA archive, a bootable floppy image
+(`.adf`, see *The boot volume* below), plus the native Linux CLI
 (`amidefrag-linux-x86_64`) and the Linux GTK window
 (`amidefrag-gui-linux-x86_64`, needs the GTK3 runtime that every desktop
 has). Click **Assets** on that page to see the files. Every push to `main` replaces
@@ -72,8 +73,7 @@ volumes, hard links skipped as headers only), PFS3 `PFS\x`/`PDS\x`
   root write is repaired from the journal on the next run (the root is
   found again by scanning for the journal file's header). Only files in
   more than one run are touched; free space is not consolidated yet on
-  FFS (the PFS3 engine's room-making pass is not ported). The boot volume
-  is refused in this version.
+  FFS (the PFS3 engine's room-making pass is not ported).
   Verified by `test/ffsfuzz.py`: random xdftool images across all DOS
   types, crash and torn-sector injection after random writes, then
   validator + rerun, with every file's md5 checked and the bitmap
@@ -177,7 +177,30 @@ AmiDefrag IMAGE=disk.hdf PART=DH1 MAP DEBUG
 AmiDefrag DH1: FILES                list the fragmented files (PFS3; all files with DEBUG)
 AmiDefrag DH1: DRYRUN               what DEFRAG would move, nothing written (FFS, PFS3)
 AmiDefrag DH1: DEFRAG               defragment (asks for YES unless FORCE)
+AmiDefrag SYS: DEFRAG LIVE          the boot volume, live mode (see below)
 ```
+
+### The boot volume
+
+The FFS and PFS3 engines inhibit the volume for the whole run, so on the
+volume the system runs from (SYS:) nothing else can use the disk while
+AmiDefrag works: programs that touch it get errors or "please insert
+volume" requesters until the run is over. There are two ways to do it:
+
+* **Boot floppy** (safest): write the `.adf` from the download to a floppy
+  (or mount it in a Gotek or emulator), boot it, pick the hard disk volume,
+  Analyze, Defragment. Nothing on the hard disk is open then, so every
+  file can be moved. `make adf` builds the image locally (xdftool).
+* **Live mode**: Analyze the boot volume and press Defragment; the
+  requester offers *Live mode* (CLI: `LIVE`). Open files are skipped:
+  both handlers keep state for every open file (FFS the current
+  extension block, PFS3 the anode chain) that survives the inhibit, so a
+  moved open file would be read through stale pointers. The engines
+  read the handler's lock list right after inhibiting, when FFS and PFS3
+  have both parked it in the DosList volume node, and leave every locked
+  file where it is (PFS3 also never moves their runs aside). Close other
+  programs first. That lock-list check runs on every mounted volume, not
+  only the boot one.
 
 ### Localization
 

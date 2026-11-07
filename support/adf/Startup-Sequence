@@ -1,0 +1,4 @@
+Echo "AmiDefrag boot floppy"
+Echo "Pick the volume, Analyze, Defragment. Close AmiDefrag, remove the floppy and reboot when done."
+SYS:AmiDefrag
+Echo "AmiDefrag has exited. Remove the floppy and reboot."

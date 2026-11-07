@@ -130,6 +130,10 @@ jobs:
       - name: Set release date
         id: date
         run: echo "DATE=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+      - name: Build bootable floppy image
+        run: |
+          pip install amitools machine68k==0.3.0 -q
+          sh support/make_adf.sh out/AmiDefrag "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.adf"
       - name: Create LHA archive
         run: |
           ARCHIVE="AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha"
@@ -149,9 +153,10 @@ jobs:
           git push --delete origin proto 2>/dev/null || true
           gh release create proto \
             --title "AmiDefrag ${{ steps.date.outputs.DATE }} PROTO" \
-            --notes "Automated prototype build from commit \`${{ github.sha }}\`. Amiga program (LHA), Linux CLI and Linux GTK window (needs the GTK3 runtime, present on most desktops)." \
+            --notes "Automated prototype build from commit \`${{ github.sha }}\`. Amiga program (LHA), bootable floppy image (ADF, for defragmenting the boot volume), Linux CLI and Linux GTK window (needs the GTK3 runtime, present on most desktops)." \
             --prerelease \
             "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
+            "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.adf" \
             "linux-out/amidefrag#amidefrag-linux-x86_64" \
             "linux-out/amidefrag-gui#amidefrag-gui-linux-x86_64"
 
@@ -167,5 +172,6 @@ jobs:
             --notes "Archived prototype build from commit \`${{ github.sha }}\`. The rolling \`proto\` release always has the newest build." \
             --prerelease \
             "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.lha" \
+            "AmiDefrag-${{ steps.date.outputs.DATE }}-PROTO.adf" \
             "linux-out/amidefrag#amidefrag-linux-x86_64" \
             "linux-out/amidefrag-gui#amidefrag-gui-linux-x86_64"

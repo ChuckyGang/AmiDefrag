@@ -81,6 +81,29 @@ void ustack_free(struct UStack *s)
     s->v = NULL; s->n = s->cap = 0;
 }
 
+/* shell sort: no libc qsort on the Amiga side, n is small */
+void keyset_sort(ULONG *k, ULONG n)
+{
+    ULONG gap, i, j, t;
+    for (gap = n / 2; gap > 0; gap /= 2)
+        for (i = gap; i < n; i++) {
+            t = k[i];
+            for (j = i; j >= gap && k[j - gap] > t; j -= gap) k[j] = k[j - gap];
+            k[j] = t;
+        }
+}
+
+BOOL keyset_has(const ULONG *k, ULONG n, ULONG key)
+{
+    ULONG lo = 0, hi = n;
+    while (lo < hi) {
+        ULONG mid = lo + (hi - lo) / 2;
+        if (k[mid] == key) return TRUE;
+        if (k[mid] < key) lo = mid + 1; else hi = mid;
+    }
+    return FALSE;
+}
+
 void FsMap_Free(struct FsMap *m)
 {
     if (m->nib) FreeVec(m->nib);

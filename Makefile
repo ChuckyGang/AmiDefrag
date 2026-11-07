@@ -89,7 +89,7 @@ CD_FILE   := catalogs/AmiDefrag.cd
 STRINGS_H := src/amidefrag_strings.h
 GENCAT    := support/gencat.py
 
-.PHONY: all clean icon FORCE amiga linux testdisk strings catalog-template catalog
+.PHONY: all clean icon FORCE amiga linux testdisk strings catalog-template catalog adf
 
 amiga: all
 linux:
@@ -112,6 +112,11 @@ $(src_obj): $(STRINGS_H)
 
 # Regenerate the string header on demand.
 strings: $(STRINGS_H)
+
+# Bootable floppy image with the Amiga binary (needs xdftool from amitools)
+adf: out/AmiDefrag.adf
+out/AmiDefrag.adf: out/AmiDefrag support/make_adf.sh support/adf/Startup-Sequence
+	@sh support/make_adf.sh out/AmiDefrag $@
 
 # Emit a fresh translation template:  make catalog-template LANG=deutsch
 LANG ?= deutsch

@@ -13,6 +13,7 @@
 #include "ffs_defrag.h"
 
 #define CHUNK        32                 /* data blocks per copy I/O */
+#define MAX_OPEN     4096               /* locks on the volume we are willing to skip around */
 #define JOURNAL_MAGIC 0x41444A31UL      /* 'ADJ1' */
 #define J_MAGIC 0
 #define J_STATE 1
@@ -39,6 +40,8 @@ struct Eng {
     ULONG jseq;
     /* candidates */
     struct UStack cands;
+    ULONG *open;                     /* sorted keys of locked objects, after inhibit */
+    ULONG  nopen;
     /* buffers */
     UBYTE *hdr, *img, *jbuf, *chunk, *chunk2, *extb;
     BOOL writes_begun;
@@ -476,8 +479,8 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     memset(stats, 0, sizeof(*stats));
     if (err && errlen) err[0] = '\0';
     if (vi->fskind != FS_FFS) { if (err) strncpy(err, "not an OFS/FFS volume", errlen - 1); return RETURN_ERROR; }
-    if (vi->is_boot && !opts->dry_run) {
-        if (err) strncpy(err, "the boot volume is not defragmented in this version", errlen - 1);
+    if (vi->is_boot && !opts->dry_run && !opts->live_boot) {
+        if (err) strncpy(err, "the boot volume is only defragmented in live mode (LIVE), or boot from another disk", errlen - 1);
         return RETURN_ERROR;
     }
 
@@ -493,6 +496,16 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
         journal_made = TRUE;
         if (!pf->inhibit(pf->ud, vi, TRUE, err, errlen)) goto done;
         inhibited = TRUE;
+        if (pf->open_keys) {
+            ULONG n;
+            e->open = (ULONG *)AllocVec(MAX_OPEN * 4, MEMF_PUBLIC);
+            if (!e->open) { seterr(e, "out of memory"); goto done; }
+            n = pf->open_keys(pf->ud, vi, e->open, MAX_OPEN);
+            if (n > MAX_OPEN) { seterr(e, "too many locks held on the volume"); goto done; }
+            e->nopen = n;
+            keyset_sort(e->open, n);
+            if (n) elog(e, "%lu lock(s) held on the volume: open files are left alone", (unsigned long)n);
+        }
     }
 
     {
@@ -547,6 +560,11 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     }
 
     for (i = 0; i < e->cands.n; i++) {
+        if (e->nopen && keyset_has(e->open, e->nopen, e->cands.v[i])) {
+            elog(e, "Skipping block %lu: file is open", (unsigned long)e->cands.v[i]);
+            stats->skipped_open++;
+            continue;
+        }
         if (!process_file(e, e->cands.v[i])) {
             rc = e->writes_begun ? RETURN_FAIL : RETURN_ERROR;
             goto done;
@@ -559,7 +577,7 @@ LONG FfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
         if (!root_flag_journaled(e, TRUE)) { seterr(e, e->v.err[0] ? e->v.err : "journal write failed"); stats->needs_validation = TRUE; rc = RETURN_FAIL; goto done; }
         BlockDev_Update(bd);
     }
-    rc = (stats->skipped_space || stats->skipped_error || stats->aborted) ? RETURN_WARN : RETURN_OK;
+    rc = (stats->skipped_space || stats->skipped_error || stats->skipped_open || stats->aborted) ? RETURN_WARN : RETURN_OK;
 
 done:
     if (e->writes_begun && stats->needs_validation)
@@ -567,6 +585,7 @@ done:
     if (opened) ffs_close(&e->v);
     if (e->hdr) FreeVec(e->hdr);
     ustack_free(&e->cands);
+    if (e->open) FreeVec(e->open);
     if (inhibited) pf->inhibit(pf->ud, vi, FALSE, NULL, 0);
     /* a journal that was never checked may hold the record of an earlier
      * interrupted run: keep it for the next attempt */

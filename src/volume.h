@@ -36,6 +36,7 @@ struct VolumeInfo {
     ULONG lowcyl, highcyl, heads, bpt;
     BOOL  mounted;
     BOOL  is_boot;          /* handler also serves SYS: */
+    APTR  volnode;          /* Amiga: struct DosList of the mounted volume, NULL elsewhere */
 };
 
 #define MAX_VOLUMES 32

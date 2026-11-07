@@ -570,18 +570,21 @@ static void defragment(struct Gui *g)
     v = &g->vols->v[g->map_vol];
     if (v->fskind == FS_SFS) { defragment_sfs(g, v); return; }
     if (v->fskind != FS_FFS && v->fskind != FS_PFS) { set_status(g, GS(MSG_GUI_ONLY_SUPPORTED_FS)); return; }
+    /* boot volume: only in live mode, and only after the user chose it */
+    memset(&o, 0, sizeof(o));
     if (v->is_boot) {
-        AD_SNPRINTF(body, GS(MSG_GUI_BOOT_BODY), g->map.volname, v->dosname);
-        ask(g, GS(MSG_GUI_BOOT_TITLE), body, GS(MSG_OK));
-        set_status(g, GS(MSG_GUI_NO_BOOT_VOLUME));
-        return;
+        AD_SNPRINTF(body, GS(MSG_GUI_BOOT_BODY), g->map.volname, v->dosname, g->map.volname);
+        if (ask(g, GS(MSG_GUI_BOOT_TITLE), body, GS(MSG_GUI_BOOT_LIVE_GADGETS)) != 1) {
+            set_status(g, GS(MSG_CANCELLED));
+            return;
+        }
+        o.live_boot = TRUE;
     }
 
     bd = BlockDev_Open(v->devname, v->unit);
     if (!bd) { set_status(g, GS(MSG_GUI_CANNOT_OPEN_DEVICE)); return; }
 
     /* dry run first: tells the user what will happen before anything is written */
-    memset(&o, 0, sizeof(o));
     o.dry_run = TRUE;
     set_defrag_enabled(g, FALSE);
     rc = (v->fskind == FS_PFS ? PfsDefrag_Run : FfsDefrag_Run)
@@ -628,6 +631,10 @@ static void defragment(struct Gui *g)
                 (unsigned long)(secs / 60), (unsigned long)(secs % 60),
                 (unsigned long)st.skipped_space,
                 st.aborted ? GS(MSG_FFS_RESULT_STOPPED_SUFFIX) : "");
+            if (st.skipped_open) {
+                size_t n = strlen(body);
+                snprintf(body + n, sizeof(body) - n, GS(MSG_FFS_RESULT_OPEN_SKIPPED), (unsigned long)st.skipped_open);
+            }
             ask(g, GS(MSG_APPNAME), body, GS(MSG_OK));
         }
     }
@@ -638,6 +645,10 @@ static void defragment(struct Gui *g)
         (unsigned long)st.moved_blocks, (unsigned long)st.skipped_space,
         st.needs_validation ? (v->fskind == FS_PFS ? GS(MSG_GUI_RUN_AGAIN_SUFFIX) : GS(MSG_GUI_NEEDS_VALIDATION_SUFFIX)) : "",
         err[0] ? " - " : "", err);
+    if (st.skipped_open) {
+        size_t n = strlen(body);
+        snprintf(body + n, sizeof(body) - n, GS(MSG_GUI_OPEN_SKIPPED_SUFFIX), (unsigned long)st.skipped_open);
+    }
     set_status(g, body);
     if (rc == RETURN_FAIL || st.needs_validation)
         ask(g, GS(MSG_APPNAME), v->fskind == FS_PFS

@@ -13,6 +13,7 @@
 #include "pfs_defrag.h"
 
 #define CHUNK          32                 /* sectors per copy I/O */
+#define MAX_OPEN       4096               /* locks on the volume we are willing to skip around */
 #define SEC            512UL
 #define JOURNAL_MAGIC  0x41444A32UL       /* 'ADJ2' */
 #define PIECES_PER_SEC 42                 /* 12 bytes each */
@@ -62,6 +63,8 @@ struct Eng {
     ULONG jcount, jcap, jseq;
     /* candidates */
     struct UStack cands;
+    ULONG *open;                     /* sorted anode numbers of locked objects, after inhibit */
+    ULONG  nopen;
     /* buffers */
     UBYTE *chunk, *chunk2, *sec;
     struct Piece *pieces;
@@ -250,12 +253,16 @@ static BOOL collect_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULO
     struct PfsVol *v = &e->v;
     ULONG a = anodenr, guard = 0, runs = 0, nblk = 0, cs, blk, next;
     ULONG tab0 = e->tab_n, tflags = 0;
+    BOOL is_open = FALSE;
     (void)name; (void)parent;
 
     /* deleted files keep their anode chain for undelete, but the handler
      * frees their blocks in the bitmap: no reference, no consistency rule */
     if (type == PFS_ST_DELETED) return TRUE;
     if (type != PFS_ST_FILE || anodenr == e->janode) tflags = TP_FIXED;
+    /* a file the handler has open keeps its anode chain cached: its runs
+     * are neither made contiguous nor moved aside */
+    if (type == PFS_ST_FILE && e->nopen && keyset_has(e->open, e->nopen, anodenr)) { tflags = TP_FIXED; is_open = TRUE; }
 
     while (a && guard++ < 1000000UL) {
         if (!pfs_get_anode(v, a, &cs, &blk, &next)) { note_incons(e, "entry with an unreachable anode"); break; }
@@ -276,6 +283,7 @@ static BOOL collect_cb(void *ud, ULONG anodenr, LONG type, const char *name, ULO
     if (type == PFS_ST_FILE && runs > 1 && anodenr != e->janode) {
         e->st->candidates++;
         e->st->cand_blocks += nblk;
+        if (is_open) { e->st->skipped_open++; return TRUE; }
         if (!ustack_push(&e->cands, anodenr)) return FALSE;
     }
     return TRUE;
@@ -679,8 +687,8 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
     memset(stats, 0, sizeof(*stats));
     if (err && errlen) err[0] = '\0';
     if (vi->fskind != FS_PFS) { if (err) strncpy(err, "not a PFS3 volume", errlen - 1); return RETURN_ERROR; }
-    if (vi->is_boot && !opts->dry_run) {
-        if (err) strncpy(err, "the boot volume is not defragmented in this version", errlen - 1);
+    if (vi->is_boot && !opts->dry_run && !opts->live_boot) {
+        if (err) strncpy(err, "the boot volume is only defragmented in live mode (LIVE), or boot from another disk", errlen - 1);
         return RETURN_ERROR;
     }
 
@@ -697,6 +705,16 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
         journal_made = TRUE;
         if (!pf->inhibit(pf->ud, vi, TRUE, err, errlen)) goto done;
         inhibited = TRUE;
+        if (pf->open_keys) {
+            ULONG n;
+            e->open = (ULONG *)AllocVec(MAX_OPEN * 4, MEMF_PUBLIC);
+            if (!e->open) { seterr(e, "out of memory"); goto done; }
+            n = pf->open_keys(pf->ud, vi, e->open, MAX_OPEN);
+            if (n > MAX_OPEN) { seterr(e, "too many locks held on the volume"); goto done; }
+            e->nopen = n;
+            keyset_sort(e->open, n);
+            if (n) elog(e, "%lu lock(s) held on the volume: open files are left alone", (unsigned long)n);
+        }
     }
 
     e->chunk = (UBYTE *)AllocVec(CHUNK * SEC * 2 + SEC, MEMF_PUBLIC);
@@ -776,7 +794,7 @@ LONG PfsDefrag_Run(struct BlockDev *bd, const struct VolumeInfo *vi,
         if (!stats->aborted) stats->skipped_space += left;
     }
     if (!opts->dry_run) BlockDev_Update(bd);
-    rc = (stats->skipped_space || stats->skipped_error || stats->aborted) ? RETURN_WARN : RETURN_OK;
+    rc = (stats->skipped_space || stats->skipped_error || stats->skipped_open || stats->aborted) ? RETURN_WARN : RETURN_OK;
 
 done:
     if (e->writes_begun && stats->needs_validation)
@@ -787,6 +805,7 @@ done:
     if (e->pieces) FreeVec(e->pieces);
     ustack_free(&e->cands);
     ustack_free(&e->later);
+    if (e->open) FreeVec(e->open);
     if (e->tab) FreeVec(e->tab);
     carr_free(&e->tabc);
     if (inhibited) pf->inhibit(pf->ud, vi, FALSE, NULL, 0);

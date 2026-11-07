@@ -154,6 +154,7 @@ void Volume_EnumerateMounted(struct VolumeList *vl)
             for (i = 0; i < vl->count; i++) {
                 if (tasks[i] == d->dol_Task && vl->v[i].volname[0] == '\0') {
                     bstr_copy(vl->v[i].volname, sizeof(vl->v[i].volname), d->dol_Name);
+                    vl->v[i].volnode = d;
                     break;
                 }
             }
