@@ -360,7 +360,16 @@ static void analyze(struct Gui *g)
         /* FFS: only when there is a fragmented file to move.  SFS: the
          * handler's defragmenter also packs files together, so it has
          * work even when no file is fragmented. */
-        set_defrag_enabled(g, ((v->fskind == FS_FFS || v->fskind == FS_PFS) && !v->is_boot && g->map.frag_files > 0) ||
+        /* Boot volume: say so on the status line and keep the button
+         * enabled, so a click explains the refusal instead of a ghosted
+         * button leaving the user guessing. */
+        if ((v->fskind == FS_FFS || v->fskind == FS_PFS) && v->is_boot) {
+            size_t n = strlen(g->status);
+            strncpy(g->status + n, GS(MSG_GUI_BOOT_SUFFIX), sizeof(g->status) - 1 - n);
+            g->status[sizeof(g->status) - 1] = 0;
+            draw_text_line(g, g->status_y, g->status);
+        }
+        set_defrag_enabled(g, ((v->fskind == FS_FFS || v->fskind == FS_PFS) && g->map.frag_files > 0) ||
                               SfsDefrag_Available(v));
     } else {
         char s[160];
@@ -561,7 +570,12 @@ static void defragment(struct Gui *g)
     v = &g->vols->v[g->map_vol];
     if (v->fskind == FS_SFS) { defragment_sfs(g, v); return; }
     if (v->fskind != FS_FFS && v->fskind != FS_PFS) { set_status(g, GS(MSG_GUI_ONLY_SUPPORTED_FS)); return; }
-    if (v->is_boot) { set_status(g, GS(MSG_GUI_NO_BOOT_VOLUME)); return; }
+    if (v->is_boot) {
+        AD_SNPRINTF(body, GS(MSG_GUI_BOOT_BODY), g->map.volname, v->dosname);
+        ask(g, GS(MSG_GUI_BOOT_TITLE), body, GS(MSG_OK));
+        set_status(g, GS(MSG_GUI_NO_BOOT_VOLUME));
+        return;
+    }
 
     bd = BlockDev_Open(v->devname, v->unit);
     if (!bd) { set_status(g, GS(MSG_GUI_CANNOT_OPEN_DEVICE)); return; }
