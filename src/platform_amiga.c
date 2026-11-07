@@ -1,7 +1,17 @@
 /*
- * platform_amiga.c - OS services for the move engines: Inhibit() the
- * volume through dos.library, create / delete the journal file with
- * ordinary file calls while the handler still runs.
+ * platform_amiga.c - OS services for the move engines: inhibit the
+ * volume, create / delete the journal file.
+ *
+ * Everything from the inhibit onwards goes to the handler's message port
+ * directly, never through a name.  dos.library resolves "NAME:" by
+ * walking the DosList, and when the volume carries the same name as its
+ * device (volume SCSI on device SCSI:) the volume node is found first.
+ * During the inhibit that node has no task (the handler parked its locks
+ * there), so DOS would put up "Please insert volume ... in any drive"
+ * instead of talking to the handler - and the uninhibit would never
+ * arrive.  PFS3 additionally answers the uninhibit before it has
+ * remounted the volume, so even a distinct name could race right after
+ * it; a packet to the port waits for the handler, which remounts first.
  */
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -28,21 +38,30 @@ static BOOL no_handler(const struct VolumeInfo *v)
     return !v->mounted || is_file;
 }
 
-static BOOL pf_inhibit(void *ud, const struct VolumeInfo *v, BOOL on, char *err, ULONG errlen)
+static struct MsgPort *handler_port(const struct VolumeInfo *v)
 {
     char name[40];
+    if (v->handler) return (struct MsgPort *)v->handler;
+    devname_colon(v, name, sizeof(name));           /* image / unmounted: not reached */
+    return DeviceProc((CONST_STRPTR)name);
+}
+
+static BOOL pf_inhibit(void *ud, const struct VolumeInfo *v, BOOL on, char *err, ULONG errlen)
+{
+    struct MsgPort *port;
     int  tries;
     (void)ud;
     if (no_handler(v)) return TRUE;
-    devname_colon(v, name, sizeof(name));
-    if (!on) { Inhibit((CONST_STRPTR)name, DOSFALSE); return TRUE; }
+    port = handler_port(v);
+    if (!port) { if (err) snprintf(err, errlen, "no handler for %s:", v->dosname); return FALSE; }
+    if (!on) { DoPkt(port, ACTION_INHIBIT, DOSFALSE, 0, 0, 0, 0); return TRUE; }
     /* FFS refuses while its own writes are unflushed (up to ~3 s). */
     for (tries = 0; tries < 20; tries++) {
-        if (Inhibit((CONST_STRPTR)name, DOSTRUE)) return TRUE;
+        if (DoPkt(port, ACTION_INHIBIT, DOSTRUE, 0, 0, 0, 0)) return TRUE;
         Delay(25);
     }
-    if (err) snprintf(err, errlen, "cannot inhibit %s (error %ld): files open or writes pending",
-                      name, (long)IoErr());
+    if (err) snprintf(err, errlen, "cannot inhibit %s: (error %ld): files open or writes pending",
+                      v->dosname, (long)IoErr());
     return FALSE;
 }
 
@@ -72,24 +91,29 @@ static BOOL pf_create_journal(void *ud, const struct VolumeInfo *v, ULONG bytes,
     return ok;
 }
 
+/* Called right after the uninhibit: ACTION_DELETE_OBJECT with a NULL lock
+ * (= the root of the volume) and a BSTR name, straight to the handler. */
 static BOOL pf_delete_journal(void *ud, const struct VolumeInfo *v)
 {
-    char path[64];
-    (void)ud;
+    struct MsgPort *port;
+    UBYTE *bname;
+    ULONG len = strlen(FFS_JOURNAL_NAME);
     BOOL ok;
+    (void)ud;
     if (no_handler(v)) return TRUE;
-    snprintf(path, sizeof(path), "%s:" FFS_JOURNAL_NAME, v->dosname);
-    ok = DeleteFile((CONST_STRPTR)path) != 0;
+    port = handler_port(v);
+    if (!port) return FALSE;
+    bname = (UBYTE *)AllocVec(len + 2, MEMF_PUBLIC);   /* longword aligned for the BPTR */
+    if (!bname) return FALSE;
+    bname[0] = (UBYTE)len;
+    memcpy(bname + 1, FFS_JOURNAL_NAME, len);
+    bname[len + 1] = 0;
+    ok = DoPkt(port, ACTION_DELETE_OBJECT, 0, (LONG)MKBADDR(bname), 0, 0, 0) != DOSFALSE;
+    FreeVec(bname);
     /* The delete marks the root dirty; FFS would set the bitmap flag valid
      * again only when its idle timer fires.  Ask it to flush now so an
      * Analyze right after the run does not show "needs validation". */
-    {
-        char dev[40];
-        struct MsgPort *port;
-        devname_colon(v, dev, sizeof(dev));
-        port = DeviceProc((CONST_STRPTR)dev);
-        if (port) DoPkt(port, ACTION_FLUSH, 0, 0, 0, 0, 0);
-    }
+    DoPkt(port, ACTION_FLUSH, 0, 0, 0, 0, 0);
     return ok;
 }
 

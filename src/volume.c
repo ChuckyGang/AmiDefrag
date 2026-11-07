@@ -141,6 +141,7 @@ void Volume_EnumerateMounted(struct VolumeList *vl)
                               de[DE_BLKSPERTRACK], de[DE_RESERVEDBLKS],
                               de[DE_LOWCYL], de[DE_UPPERCYL], de[DE_DOSTYPE]);
             tasks[vl->count] = d->dol_Task;
+            v->handler = d->dol_Task;
             vl->count++;
         }
     }
